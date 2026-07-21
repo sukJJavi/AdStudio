@@ -2,9 +2,11 @@ import { task, metadata } from "@trigger.dev/sdk/v3";
 import { createTriggerSupabaseClient } from "@/lib/supabase/trigger-client";
 import { getIABFormatById, type IABFormat } from "@/lib/iab/specs";
 import { fontFamilyStack, googleFontUrl } from "@/lib/fonts";
-import { buildCanvasHtml, splitCopy } from "@/lib/render/canvas-html";
-import { pickLargestBy, selectClassifiedAssets, toDataUri } from "@/lib/render/assets";
-import { launchBrowser } from "@/lib/render/browser";
+import { splitCopy } from "@/lib/render/copy";
+import { pickLargestBy, selectClassifiedAssets, downloadAsset } from "@/lib/render/assets";
+import { loadGoogleFont } from "@/lib/render/font-loader";
+import { renderBannerToJpg, renderBannerToPng } from "@/lib/render/jpg-renderer";
+import { generateHtml5 } from "@/lib/render/html5-generator";
 import type { ProjectFormat } from "@/lib/types";
 
 type RenderMasterPayload = {
@@ -12,6 +14,10 @@ type RenderMasterPayload = {
   iabFormatId?: string;
   isPrimary?: boolean;
 };
+
+function toBase64(buffer: Buffer | null): string | undefined {
+  return buffer ? buffer.toString("base64") : undefined;
+}
 
 export const renderMaster = task({
   id: "render-master",
@@ -30,7 +36,7 @@ export const renderMaster = task({
     const { byClassification } = selectClassifiedAssets(assets ?? []);
 
     metadata.set("step", "seleccionando-formato");
-    metadata.set("progress", 0.15);
+    metadata.set("progress", 0.1);
 
     const formatsWithSpec = pickLargestBy(
       ((formats ?? []) as ProjectFormat[])
@@ -50,94 +56,88 @@ export const renderMaster = task({
     const { format, spec } = selected;
     const fontPrimary = project?.font_primary ?? "Inter";
 
-    metadata.set("step", "construyendo-html");
-    metadata.set("progress", 0.3);
+    metadata.set("step", "descargando-assets-y-fuente");
+    metadata.set("progress", 0.25);
 
     const fondoAsset = byClassification("fondo");
     const imagenPrincipalAsset = byClassification("imagen_principal");
     const logoAsset = byClassification("logo");
 
-    const [backgroundSrc, mainImageSrc, logoSrc] = await Promise.all([
-      toDataUri(supabase, fondoAsset?.file_path ?? null),
-      toDataUri(supabase, imagenPrincipalAsset?.file_path ?? null),
-      toDataUri(supabase, logoAsset?.file_path ?? null),
+    const [fondoBuffer, imagenPrincipalBuffer, logoBuffer, fontRegular, fontBold] = await Promise.all([
+      downloadAsset(supabase, fondoAsset?.file_path ?? null),
+      downloadAsset(supabase, imagenPrincipalAsset?.file_path ?? null),
+      downloadAsset(supabase, logoAsset?.file_path ?? null),
+      loadGoogleFont(fontPrimary, 400),
+      loadGoogleFont(fontPrimary, 700),
     ]);
 
     const logoAspectRatio =
       logoAsset?.width && logoAsset?.height && logoAsset.height > 0 ? logoAsset.width / logoAsset.height : null;
 
-    const safe = spec.zonaSeguraPx;
-    const logoWidthPx = Math.round(spec.ancho * 0.2);
-    const logoHeightPx = logoAspectRatio ? Math.round(logoWidthPx / logoAspectRatio) : Math.round(logoWidthPx * 0.4);
-    const claimTopPx = logoSrc ? safe + logoHeightPx + safe : safe;
-    const claimFontSizePx = Math.min(56, Math.max(14, Math.round(spec.alto * 0.12)));
-    const subclaimFontSizePx = Math.max(11, Math.round(claimFontSizePx * 0.55));
-    const ctaFontSizePx = Math.max(12, Math.round(claimFontSizePx * 0.5));
-
     const { claim, subclaim, disclaimer } = splitCopy(format.copy ?? null);
+    const fontFamily = fontFamilyStack(fontPrimary);
+    const fontImportUrl = googleFontUrl(fontPrimary);
 
-    const html = buildCanvasHtml({
+    const bannerElements = {
       width: spec.ancho,
       height: spec.alto,
-      safeZonePx: safe,
-      backgroundSrc,
-      mainImageSrc,
-      mainImageMaxWidthPct: 60,
-      mainImageMaxHeightPct: 60,
-      logoSrc,
-      logoWidthPx,
-      logoHeightPx,
+      backgroundColor: "#FFFFFF",
+      backgroundImageBase64: toBase64(fondoBuffer),
+      logoBase64: toBase64(logoBuffer),
+      logoAspectRatio,
+      mainImageBase64: toBase64(imagenPrincipalBuffer),
       claim,
-      claimFontSizePx,
-      claimTopPx,
       subclaim,
-      subclaimFontSizePx,
-      subclaimTopPx: claimTopPx + claimFontSizePx + 6,
       cta: claim,
-      ctaFontSizePx,
-      ctaHeightPx: 32,
-      ctaPaddingHorizontalPx: 16,
       disclaimer,
-      fontFamily: fontFamilyStack(fontPrimary),
-      googleFontImportUrl: googleFontUrl(fontPrimary),
-      animated: false,
-    });
+      fontFamily,
+      fontBase64: fontRegular.toString("base64"),
+      fontBoldBase64: fontBold.toString("base64"),
+    };
 
-    metadata.set("step", "renderizando");
+    metadata.set("step", "renderizando-jpg");
     metadata.set("progress", 0.55);
 
-    const browser = await launchBrowser();
+    const [jpgBuffer, pngBuffer] = await Promise.all([
+      renderBannerToJpg(bannerElements),
+      renderBannerToPng(bannerElements),
+    ]);
 
-    let jpgBuffer: Buffer;
-    let pngBuffer: Buffer;
+    metadata.set("step", "generando-html5");
+    metadata.set("progress", 0.75);
 
-    try {
-      const page = await browser.newPage();
-      await page.setViewport({ width: spec.ancho, height: spec.alto, deviceScaleFactor: 1 });
-      // page.goto (no setContent, que no admite networkidle0) para esperar a que
-      // cargue la Google Font (@import) antes de capturar.
-      await page.goto(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`, {
-        waitUntil: "networkidle0",
-      });
-      jpgBuffer = (await page.screenshot({ type: "jpeg", quality: 90 })) as Buffer;
-      pngBuffer = (await page.screenshot({ type: "png" })) as Buffer;
-    } finally {
-      await browser.close();
-    }
+    const html = generateHtml5({
+      width: spec.ancho,
+      height: spec.alto,
+      backgroundColor: "#FFFFFF",
+      backgroundImageBase64: toBase64(fondoBuffer) ?? null,
+      logoBase64: toBase64(logoBuffer) ?? null,
+      logoAspectRatio,
+      mainImageBase64: toBase64(imagenPrincipalBuffer) ?? null,
+      claim,
+      subclaim,
+      cta: claim,
+      disclaimer,
+      fontFamily,
+      googleFontImportUrl: fontImportUrl,
+      fallbackJpgBase64: jpgBuffer.toString("base64"),
+    });
 
     metadata.set("step", "subiendo-archivos");
-    metadata.set("progress", 0.85);
+    metadata.set("progress", 0.9);
 
-    const jpgPath = `${payload.projectId}/master/${format.iab_format}.jpg`;
-    const pngPath = `${payload.projectId}/master/${format.iab_format}.png`;
+    const basePath = `${payload.projectId}/master/${format.iab_format}`;
 
     await Promise.all([
       supabase.storage
         .from("adstudio-projects")
-        .upload(jpgPath, jpgBuffer, { contentType: "image/jpeg", upsert: true }),
+        .upload(`${basePath}.jpg`, jpgBuffer, { contentType: "image/jpeg", upsert: true }),
       supabase.storage
         .from("adstudio-projects")
-        .upload(pngPath, pngBuffer, { contentType: "image/png", upsert: true }),
+        .upload(`${basePath}.png`, pngBuffer, { contentType: "image/png", upsert: true }),
+      supabase.storage
+        .from("adstudio-projects")
+        .upload(`${basePath}.html`, html, { contentType: "text/html", upsert: true }),
     ]);
 
     const isPrimary = payload.isPrimary ?? false;
@@ -153,8 +153,8 @@ export const renderMaster = task({
       {
         project_id: payload.projectId,
         iab_format: format.iab_format,
-        jpg_path: jpgPath,
-        png_path: pngPath,
+        jpg_path: `${basePath}.jpg`,
+        png_path: `${basePath}.png`,
         width: spec.ancho,
         height: spec.alto,
         jpg_size_bytes: jpgBuffer.byteLength,

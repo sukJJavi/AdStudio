@@ -26,22 +26,27 @@ clasifican directamente como `'texto'` con su fuente/tamaño/contenido reales ex
 un proyecto de Trigger.dev desplegado (`npx trigger deploy` nunca se ha ejecutado) y un PSD real
 de prueba.
 
-### Master (`/project/[id]/master`) — funcional, sin probar en runtime
+### Master (`/project/[id]/master`) — funcional, verificado parcialmente
 Selector de tipografía (fuente detectada del PSD + 20 Google Fonts + preview en vivo) →
-`PATCH /api/project/[id]/font`. `trigger/render-master.ts` compone el HTML5 (fondo/imagen
-principal/logo de las capas clasificadas, claim/subclaim/CTA/disclaimer del `copy` del formato,
-tipografía elegida) y lo renderiza con Puppeteer a JPG/PNG. Aprobación pública vía
-`/approve/[token]` (UUID, 7 días, sin login) + emails con Resend. **No verificado en runtime**:
-requiere que Puppeteer pueda lanzar Chromium en el entorno de Trigger.dev, acceso de red a
-Google Fonts desde ese entorno, y `RESEND_API_KEY` real para los emails.
+`PATCH /api/project/[id]/font`. `trigger/render-master.ts` descarga las capas clasificadas
+(fondo/imagen principal/logo) y la Google Font elegida, y compone el banner con
+`lib/render/jpg-renderer.ts` (Satori → SVG → Resvg → PNG → Sharp → JPG, sin navegador) para el
+JPG/PNG, y `lib/render/html5-generator.ts` (string building puro) para el HTML. Aprobación
+pública vía `/approve/[token]` (UUID, 7 días, sin login) + emails con Resend. El pipeline de
+render (descarga de fuente real de Google Fonts vía el truco de User-Agent legacy, construcción
+del árbol Satori, rasterizado con Resvg, conversión a JPG con Sharp) se probó de extremo a extremo
+localmente en esta sesión con datos de prueba — no verificado dentro de un job real de
+Trigger.dev. Pendiente: `RESEND_API_KEY` real para los emails.
 
-### Production (`/project/[id]/production`) — funcional, sin probar en runtime
-`trigger/render-adaptations.ts` produce cada formato no bloqueado: HTML5 animado (GSAP vía CDN,
-assets en carpeta propia, nunca base64, para respetar el límite de 150KB IAB) + JPG de respaldo,
-con el escalado proporcional pedido (logo 20% ancho, imagen principal 55% del área, claim
-`16px·√(área/75000)`, CTA 32px de alto). Progreso derivado del `status` de cada formato en BD
-(sin depender de metadata de Trigger.dev). Un formato que falla no aborta el resto del lote.
-**No verificado en runtime** — mismas dependencias que Master (Puppeteer + red).
+### Production (`/project/[id]/production`) — funcional, verificado parcialmente
+`trigger/render-adaptations.ts` produce cada formato no bloqueado: JPG vía Satori+Resvg (mismo
+pipeline que Master) + HTML5 animado autocontenido (GSAP vía CDN, fondo/imagen/logo embebidos en
+base64 — el límite IAB LEAN de 150KB aplica al HTML sin contar esos assets), con el escalado
+proporcional pedido (logo 20% ancho, imagen principal 55% del área, claim `16px·√(área/75000)`,
+CTA 32px de alto) calculado una sola vez en `lib/render/layout.ts` y compartido entre el JPG y el
+HTML. Progreso derivado del `status` de cada formato en BD (sin depender de metadata de
+Trigger.dev). Un formato que falla no aborta el resto del lote. Mismo nivel de verificación que
+Master (pipeline de render probado localmente, no dentro de un job real).
 
 ### Delivery (`/project/[id]/delivery`) — funcional, sin probar en runtime
 Grid de piezas producidas (JPG de respaldo vía signed URL), descarga del ZIP
@@ -120,8 +125,9 @@ suscripciones no está implementado, solo previsto en `CLAUDE.md`.
 
 ## Qué requiere prueba end-to-end con credenciales reales
 
-Nada de lo anterior se ha ejecutado contra servicios reales en esta sesión — solo se ha
-verificado que compila y tipa limpio. Para validar de verdad hace falta, en este orden:
+Salvo el pipeline de render (ver punto 4), nada de lo anterior se ha ejecutado contra servicios
+reales en esta sesión — solo se ha verificado que compila y tipa limpio. Para validar de verdad
+hace falta, en este orden:
 
 1. **Supabase real**: ejecutar `schema.sql` (o `migrations.sql` sobre una base antigua), probar
    registro/login real (envía un email de confirmación real desde el proyecto compartido) y
@@ -133,13 +139,17 @@ verificado que compila y tipa limpio. Para validar de verdad hace falta, en este
 3. **Claude Vision real**: subir un PSD real y confirmar que la clasificación por capa
    (`ANTHROPIC_API_KEY`) produce categorías razonables y que el `quality_score` calculado tiene
    sentido con dimensiones/dpi reales.
-4. **Puppeteer en el entorno de Trigger.dev/Vercel**: `render-master.ts` y `render-adaptations.ts`
-   lanzan Chromium vía `puppeteer-core` + `@sparticuz/chromium` (`lib/render/browser.ts`) en vez
-   del paquete `puppeteer` completo, que no cabe/no arranca en entornos serverless — confirmar
-   igualmente que `chromium.executablePath()` resuelve el binario correctamente en el runtime real
-   (memoria mínima recomendada por `@sparticuz/chromium`: 512MB, idealmente ≥1600MB) y que el
-   entorno tiene salida de red hacia `fonts.googleapis.com` para que `waitUntil: 'networkidle0'`
-   no se quede esperando indefinidamente si la red está restringida.
+4. **Render sin navegador (Satori+Resvg)**: ya no hay Puppeteer/Chromium en el proyecto —
+   `render-master.ts` y `render-adaptations.ts` usan `lib/render/jpg-renderer.ts` (Satori compone
+   el árbol de nodos a SVG, Resvg lo rasteriza a PNG, Sharp lo convierte a JPG) y
+   `lib/render/html5-generator.ts` (string building puro, sin renderizar nada). El pipeline
+   completo — descarga real de una Google Font vía `lib/render/font-loader.ts`, construcción del
+   árbol Satori con imágenes de prueba, SVG → PNG con Resvg, PNG → JPG con Sharp — se ejecutó y
+   verificó localmente en esta sesión (fuera de Trigger.dev) sin errores. Pendiente confirmar
+   dentro de un job real: que el entorno de Trigger.dev tiene salida de red hacia
+   `fonts.googleapis.com` (si no, `loadGoogleFont` falla al no poder descargar la fuente — no hay
+   fallback a una fuente local) y que `@resvg/resvg-js` (binario nativo prebuilt) tiene un binario
+   compatible con la arquitectura/SO del runtime de Trigger.dev.
 5. **Resend real**: confirmar que los emails de "master listo" y "cambios solicitados" llegan,
    con `RESEND_FROM_EMAIL` apuntando a un dominio verificado (el remitente de pruebas
    `onboarding@resend.dev` no es apto para producción).

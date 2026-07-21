@@ -15,8 +15,9 @@ adaptación por formato, animación y exportación que normalmente hace un maque
 - **Claude API** (`claude-sonnet-4-6`) — clasificación visual de capas del PSD (Vision)
 - **ag-psd** — extracción de capas, texto y metadata del PSD
 - **Sharp** — aplanado de capas a PNG
-- **Puppeteer** (`puppeteer-core` + `@sparticuz/chromium`) — render de HTML5 → JPG/PNG; Chromium
-  serverless en vez del paquete `puppeteer` completo, para caber en el entorno de despliegue
+- **Satori + Resvg** (`satori`, `@resvg/resvg-js`) — render del JPG/PNG del banner sin navegador:
+  Satori compone un árbol de nodos a SVG, Resvg lo rasteriza a PNG (y Sharp lo convierte a JPG).
+  Sin Puppeteer/Chromium — nada que lanzar ni descargar en el entorno serverless de Trigger.dev
 - **GSAP** (CDN, embebido en las piezas generadas) — animación por defecto de las adaptaciones
 - **archiver** — generación del ZIP de entrega en memoria
 - **Resend** — emails transaccionales (master listo para revisar, cambios solicitados)
@@ -40,14 +41,14 @@ bajo `/project/[id]/*`:
    (`lib/iab/incident-analyzer.ts`) — un formato con incidencia crítica queda bloqueado, pero
    nunca bloquea el resto del proyecto.
 4. **Master** (`/master`) — elige tipografía (detectada del PSD o de una lista de 20 Google
-   Fonts), genera el master (`trigger/render-master.ts`, HTML5 estático → JPG/PNG con el
+   Fonts), genera el master (`trigger/render-master.ts`: JPG/PNG vía Satori+Resvg, con el
    formato más grande no bloqueado del plan) y lo envía a aprobación del cliente vía un link
    público firmado (`/approve/[token]`, sin login, válido 7 días). El cliente aprueba o pide
    cambios; ambas acciones notifican por email.
 5. **Production** (`/production`) — una vez aprobado, produce cada formato no bloqueado
-   (`trigger/render-adaptations.ts`): HTML5 animado (GSAP, máx. 15s / 3 loops, zona segura 10px)
-   con assets propios en carpeta + JPG de respaldo, escalado proporcional por formato (logo máx.
-   20% ancho, imagen principal máx. 55% del área, claim proporcional a `sqrt(área)`).
+   (`trigger/render-adaptations.ts`): JPG vía Satori+Resvg + HTML5 animado autocontenido (GSAP,
+   máx. 15s / 3 loops, zona segura 10px, assets embebidos en base64), escalado proporcional por
+   formato (logo máx. 20% ancho, imagen principal máx. 55% del área, claim proporcional a `sqrt(área)`).
 6. **Delivery** (`/delivery`) — grid de piezas producidas con preview, descarga del ZIP completo
    (`{cliente}_{producto}_adaptaciones.zip`, con `manifest.json`) y link de preview temporal
    (signed URL, 7 días).
@@ -126,13 +127,14 @@ a `/dashboard`.
 
 /trigger
   /analyze-psd.ts        → job: ag-psd + Claude Vision por capa (+ fuente real de capas de texto)
-  /render-master.ts      → job: HTML5 master estático + JPG/PNG
-  /render-adaptations.ts → job: todos los formatos no bloqueados → HTML5 animado + JPG + ZIP
+  /render-master.ts      → job: JPG/PNG (Satori+Resvg) + HTML5 del master
+  /render-adaptations.ts → job: todos los formatos no bloqueados → JPG (Satori+Resvg) + HTML5 animado → ZIP
 
 /lib
   /iab                → specs IAB + análisis de incidencias
   /claude             → wrapper de Claude Vision
-  /render             → selección de assets clasificados + builder de HTML de canvas
+  /render             → layout, copy, descarga de assets, font-loader, jpg-renderer (Satori+Resvg),
+                          html5-generator — ver CLAUDE.md para el detalle de cada archivo
   /animation          → preset de animación GSAP por defecto
   /export             → generador de ZIP (in-memory) + manifest.json
   /email              → wrapper de Resend + plantillas de email

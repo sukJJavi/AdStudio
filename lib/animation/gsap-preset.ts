@@ -1,6 +1,6 @@
 /**
  * Preset de animación GSAP por defecto (cuando el proyecto no trae guía de
- * animación propia). Referencia las clases usadas por lib/render/canvas-html.ts.
+ * animación propia). Referencia las clases usadas por lib/render/html5-generator.ts.
  *
  * Frame 1 (0-2s):  fade in fondo + imagen principal
  * Frame 2 (2-4s):  slide up claim desde bottom + 20px

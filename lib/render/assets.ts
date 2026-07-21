@@ -47,12 +47,3 @@ export async function downloadAsset(
   if (error || !data) return null;
   return Buffer.from(await data.arrayBuffer());
 }
-
-export async function toDataUri(
-  supabase: SupabaseServerClient,
-  filePath: string | null,
-): Promise<string | null> {
-  const buffer = await downloadAsset(supabase, filePath);
-  if (!buffer) return null;
-  return `data:image/png;base64,${buffer.toString("base64")}`;
-}

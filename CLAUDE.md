@@ -10,8 +10,10 @@ adaptaciones por formato, animación y exportación.
 - Trigger.dev: jobs pesados (análisis PSD, render, exportación)
 - Claude API (claude-sonnet-4-6): Vision + Text
 - ag-psd: extracción de capas PSD
-- Sharp: procesado de imágenes
-- Puppeteer (`puppeteer-core` + `@sparticuz/chromium`, Chromium serverless): render HTML5 → JPG
+- Sharp: procesado de imágenes (PNG de capas del PSD, conversión final a JPG)
+- Satori + Resvg (`satori`, `@resvg/resvg-js`): render del JPG del banner sin navegador — Satori
+  compone un árbol de nodos a SVG, Resvg lo rasteriza a PNG. Nada de Puppeteer/Chromium: no hay
+  binario que descargar ni proceso de navegador que lanzar en el entorno serverless de Trigger.dev
 - GSAP: animaciones en banners
 - Stripe: suscripciones y extensiones
 - Resend: emails transaccionales
@@ -40,13 +42,19 @@ adaptaciones por formato, animación y exportación.
 /trigger
   /analyze-psd.ts     → job: ag-psd + Claude Vision por capas (+ fontName/fontSize/content de capas de texto)
   /validate-excel.ts  → job: parseo + validación copys
-  /render-master.ts   → job: HTML5 master estático + JPG/PNG, aplica font_primary del proyecto
-  /render-adaptations.ts → job: todos los formatos no bloqueados → HTML5 animado (GSAP) + JPG de respaldo → ZIP
+  /render-master.ts   → job: JPG/PNG (Satori+Resvg) + HTML5 del master, aplica font_primary del proyecto
+  /render-adaptations.ts → job: todos los formatos no bloqueados → JPG (Satori+Resvg) + HTML5 animado → ZIP
 
 /lib
   /iab                → specs IAB (dimensiones, pesos, zonas seguras) + análisis de incidencias
   /claude             → wrappers Claude API (vision, text)
-  /render             → selección de assets clasificados + builder de HTML de canvas (compartido master/adaptations)
+  /render
+    /layout.ts          → cálculo de proporciones (logo/imagen/claim/CTA), compartido por ambos renderers
+    /copy.ts            → split de adstudio_formats.copy en claim/subclaim/disclaimer
+    /assets.ts          → selección de assets clasificados + descarga desde Storage
+    /font-loader.ts     → descarga el TTF/OTF real de una Google Font (Satori no acepta fuentes por URL)
+    /jpg-renderer.ts    → renderBannerToJpg/Png: árbol de nodos → Satori (SVG) → Resvg (PNG) → Sharp (JPG)
+    /html5-generator.ts → generateHtml5: HTML animado autocontenido como string, sin renderizar nada
   /animation          → preset de animación GSAP por defecto
   /export             → generador de ZIP (in-memory, archiver) + manifest
   /fonts.ts           → lista de Google Fonts + helpers de import/font-family
@@ -90,7 +98,8 @@ Issues and specs live as markdown files under `.scratch/<feature-slug>/` (no git
 Single-context layout: `CONTEXT.md` + `docs/adr/` at the repo root, created lazily as decisions get resolved. See `docs/agents/domain.md`.
 
 ## Reglas IAB LEAN (aplicar siempre)
-- Peso máximo por defecto: 150KB HTML5, sin límite JPG de respaldo
+- Peso máximo por defecto: 150KB HTML5 sin contar los assets embebidos en base64 (el HTML es
+  autocontenido — fondo/imagen/logo van inline, no en archivos aparte), sin límite JPG de respaldo
 - Animación: máx 15s, máx 3 loops, sin autoplay con sonido
 - Zona segura: 10px interior en todos los formatos
 - Siempre entregar HTML5 + JPG de respaldo
@@ -104,7 +113,8 @@ Single-context layout: `CONTEXT.md` + `docs/adr/` at the repo root, created lazi
 - Cada job de Trigger.dev reporta progreso por paso (no solo inicio/fin)
 - El link de aprobación es un UUID en /approve/[token], sin login
 - El ZIP se nombra `{cliente}_{producto}_adaptaciones.zip`, con esta estructura interna:
-  `{cliente}_{producto}/manifest.json` y `{cliente}_{producto}/{nombre_soporte}_{iab_format}/index.html|assets/|fallback.jpg`
+  `{cliente}_{producto}/manifest.json` y `{cliente}_{producto}/{nombre_soporte}_{iab_format}/index.html|fallback.jpg`
+  (sin carpeta `assets/` — el HTML de cada pieza es autocontenido, ver Reglas IAB LEAN)
 - manifest.json incluye: dimensiones, peso (JPG y HTML), versión, fecha, incidencias por pieza
 - Nunca bloquear el proyecto completo por un formato con incidencia crítica
 
