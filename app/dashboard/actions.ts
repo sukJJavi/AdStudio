@@ -13,7 +13,7 @@ export async function createBlankProject() {
     redirect("/login");
   }
 
-  const { data: project, error } = await supabase
+  const { data, error } = await supabase
     .from("adstudio_projects")
     .insert({
       user_id: user.id,
@@ -24,9 +24,13 @@ export async function createBlankProject() {
     .select("id")
     .single();
 
-  if (error || !project) {
-    throw new Error(error?.message ?? "No se pudo crear el proyecto.");
+  if (error) {
+    throw new Error(error.message);
   }
 
-  redirect(`/project/${project.id}/brief`);
+  if (!data?.id) {
+    throw new Error("No se pudo crear el proyecto: el insert no devolvió un id.");
+  }
+
+  redirect(`/project/${data.id}/brief`);
 }
