@@ -3,7 +3,6 @@
   "framework": "nextjs",
   "buildCommand": "npm run build",
   "regions": ["fra1"],
-  "_comment": "Las variables de entorno NO se declaran aquí (Vercel no soporta comentarios junto a valores reales en vercel.json, y no usamos el sistema legacy de Secrets con '@nombre' para no romper el deploy). Añádelas en Project Settings > Environment Variables. Lista de nombres requeridos abajo, con dónde conseguir cada una.",
   "environmentVariablesRequired": {
     "NEXT_PUBLIC_SUPABASE_URL": "Supabase > Project Settings > API > Project URL",
     "NEXT_PUBLIC_SUPABASE_ANON_KEY": "Supabase > Project Settings > API > anon public key",
