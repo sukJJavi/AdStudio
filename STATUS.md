@@ -133,8 +133,11 @@ verificado que compila y tipa limpio. Para validar de verdad hace falta, en este
 3. **Claude Vision real**: subir un PSD real y confirmar que la clasificación por capa
    (`ANTHROPIC_API_KEY`) produce categorías razonables y que el `quality_score` calculado tiene
    sentido con dimensiones/dpi reales.
-4. **Puppeteer en el entorno de Trigger.dev**: confirmar que Chromium arranca ahí (puede requerir
-   configurar el build de Trigger.dev para incluir las dependencias de Puppeteer) y que el
+4. **Puppeteer en el entorno de Trigger.dev/Vercel**: `render-master.ts` y `render-adaptations.ts`
+   lanzan Chromium vía `puppeteer-core` + `@sparticuz/chromium` (`lib/render/browser.ts`) en vez
+   del paquete `puppeteer` completo, que no cabe/no arranca en entornos serverless — confirmar
+   igualmente que `chromium.executablePath()` resuelve el binario correctamente en el runtime real
+   (memoria mínima recomendada por `@sparticuz/chromium`: 512MB, idealmente ≥1600MB) y que el
    entorno tiene salida de red hacia `fonts.googleapis.com` para que `waitUntil: 'networkidle0'`
    no se quede esperando indefinidamente si la red está restringida.
 5. **Resend real**: confirmar que los emails de "master listo" y "cambios solicitados" llegan,

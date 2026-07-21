@@ -1,11 +1,12 @@
 import { task, metadata } from "@trigger.dev/sdk/v3";
-import puppeteer, { type Browser } from "puppeteer";
+import type { Browser } from "puppeteer-core";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getIABFormatById, type IABFormat } from "@/lib/iab/specs";
 import { unblockedFormats } from "@/lib/iab/incident-analyzer";
 import { fontFamilyStack, googleFontUrl } from "@/lib/fonts";
 import { buildCanvasHtml, splitCopy } from "@/lib/render/canvas-html";
 import { downloadAsset, selectClassifiedAssets } from "@/lib/render/assets";
+import { launchBrowser } from "@/lib/render/browser";
 import {
   buildManifestJson,
   buildZipBuffer,
@@ -189,10 +190,7 @@ export const renderAdaptations = task({
     const total = formatsToProduce.length;
     let producedCount = 0;
 
-    const browser = await puppeteer.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-web-security"],
-    });
+    const browser = await launchBrowser();
 
     try {
       for (let i = 0; i < formatsToProduce.length; i++) {

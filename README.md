@@ -15,7 +15,8 @@ adaptación por formato, animación y exportación que normalmente hace un maque
 - **Claude API** (`claude-sonnet-4-6`) — clasificación visual de capas del PSD (Vision)
 - **ag-psd** — extracción de capas, texto y metadata del PSD
 - **Sharp** — aplanado de capas a PNG
-- **Puppeteer** — render de HTML5 → JPG/PNG
+- **Puppeteer** (`puppeteer-core` + `@sparticuz/chromium`) — render de HTML5 → JPG/PNG; Chromium
+  serverless en vez del paquete `puppeteer` completo, para caber en el entorno de despliegue
 - **GSAP** (CDN, embebido en las piezas generadas) — animación por defecto de las adaptaciones
 - **archiver** — generación del ZIP de entrega en memoria
 - **Resend** — emails transaccionales (master listo para revisar, cambios solicitados)

@@ -11,7 +11,7 @@ adaptaciones por formato, animación y exportación.
 - Claude API (claude-sonnet-4-6): Vision + Text
 - ag-psd: extracción de capas PSD
 - Sharp: procesado de imágenes
-- Puppeteer: render HTML5 → JPG
+- Puppeteer (`puppeteer-core` + `@sparticuz/chromium`, Chromium serverless): render HTML5 → JPG
 - GSAP: animaciones en banners
 - Stripe: suscripciones y extensiones
 - Resend: emails transaccionales

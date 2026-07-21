@@ -1,10 +1,10 @@
 import { task, metadata } from "@trigger.dev/sdk/v3";
-import puppeteer from "puppeteer";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getIABFormatById, type IABFormat } from "@/lib/iab/specs";
 import { fontFamilyStack, googleFontUrl } from "@/lib/fonts";
 import { buildCanvasHtml, splitCopy } from "@/lib/render/canvas-html";
 import { pickLargestBy, selectClassifiedAssets, toDataUri } from "@/lib/render/assets";
+import { launchBrowser } from "@/lib/render/browser";
 import type { ProjectFormat } from "@/lib/types";
 
 type RenderMasterPayload = {
@@ -106,10 +106,7 @@ export const renderMaster = task({
     metadata.set("step", "renderizando");
     metadata.set("progress", 0.55);
 
-    const browser = await puppeteer.launch({
-      headless: true,
-      args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-web-security"],
-    });
+    const browser = await launchBrowser();
 
     let jpgBuffer: Buffer;
     let pngBuffer: Buffer;
