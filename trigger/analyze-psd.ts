@@ -210,7 +210,7 @@ export const analyzePsd = task({
     metadata.set("step", "generando-informe-incidencias");
     metadata.set("progress", 0.95);
 
-    await analyzeProjectIncidents(payload.projectId);
+    await analyzeProjectIncidents(payload.projectId, supabase);
 
     await supabase
       .from("adstudio_projects")

@@ -1,4 +1,4 @@
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { getIABFormatById } from "@/lib/iab/specs";
 import type { Incidencia, Project, ProjectAsset, ProjectFormat } from "@/lib/types";
 
@@ -185,11 +185,15 @@ function buildIncidenciasForFormat(
 /**
  * Cruza adstudio_assets + adstudio_formats del proyecto, genera las incidencias
  * de cada formato y las persiste en adstudio_formats.incidencias.
- * Usa siempre service-role: se invoca desde el job de Trigger.dev (sin sesión de usuario).
+ * Se invoca desde el job de Trigger.dev (sin sesión de usuario): el cliente
+ * Supabase se recibe por parámetro (creado con `createTriggerSupabaseClient`)
+ * en vez de crearse aquí, porque `lib/supabase/server.ts` falla por WebSocket
+ * en el runtime de Trigger.dev.
  */
-export async function analyzeProjectIncidents(projectId: string): Promise<void> {
-  const supabase = createServerSupabaseClient();
-
+export async function analyzeProjectIncidents(
+  projectId: string,
+  supabase: SupabaseClient,
+): Promise<void> {
   const [{ data: assets, error: assetsError }, { data: formats, error: formatsError }] = await Promise.all([
     supabase.from("adstudio_assets").select("*").eq("project_id", projectId),
     supabase.from("adstudio_formats").select("*").eq("project_id", projectId),
