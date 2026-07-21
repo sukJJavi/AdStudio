@@ -1,5 +1,5 @@
 import { task, metadata } from "@trigger.dev/sdk/v3";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { createTriggerSupabaseClient } from "@/lib/supabase/trigger-client";
 import { getIABFormatById, type IABFormat } from "@/lib/iab/specs";
 import { fontFamilyStack, googleFontUrl } from "@/lib/fonts";
 import { buildCanvasHtml, splitCopy } from "@/lib/render/canvas-html";
@@ -16,7 +16,7 @@ type RenderMasterPayload = {
 export const renderMaster = task({
   id: "render-master",
   run: async (payload: RenderMasterPayload) => {
-    const supabase = createServerSupabaseClient();
+    const supabase = createTriggerSupabaseClient();
 
     metadata.set("step", "leyendo-assets");
     metadata.set("progress", 0);

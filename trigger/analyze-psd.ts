@@ -2,7 +2,7 @@ import { task, metadata } from "@trigger.dev/sdk/v3";
 import { readPsd } from "ag-psd";
 import type { Layer } from "ag-psd";
 import sharp from "sharp";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { createTriggerSupabaseClient } from "@/lib/supabase/trigger-client";
 import { classifyLayerImage } from "@/lib/claude/vision";
 import { getIABFormatById } from "@/lib/iab/specs";
 import { analyzeProjectIncidents } from "@/lib/iab/incident-analyzer";
@@ -45,7 +45,7 @@ function resolutionFactor(width: number, height: number, formatoMaxArea: number 
 export const analyzePsd = task({
   id: "analyze-psd",
   run: async (payload: AnalyzePsdPayload) => {
-    const supabase = createServerSupabaseClient();
+    const supabase = createTriggerSupabaseClient();
 
     metadata.set("step", "descargando-psd");
     metadata.set("progress", 0);

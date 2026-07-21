@@ -1,6 +1,6 @@
 import { task, metadata } from "@trigger.dev/sdk/v3";
 import type { Browser } from "puppeteer-core";
-import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { createTriggerSupabaseClient } from "@/lib/supabase/trigger-client";
 import { getIABFormatById, type IABFormat } from "@/lib/iab/specs";
 import { unblockedFormats } from "@/lib/iab/incident-analyzer";
 import { fontFamilyStack, googleFontUrl } from "@/lib/fonts";
@@ -140,7 +140,7 @@ async function renderPiece(params: {
 export const renderAdaptations = task({
   id: "render-adaptations",
   run: async (payload: RenderAdaptationsPayload) => {
-    const supabase = createServerSupabaseClient();
+    const supabase = createTriggerSupabaseClient();
 
     metadata.set("step", "leyendo-datos-del-proyecto");
     metadata.set("progress", 0);
