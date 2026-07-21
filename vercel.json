@@ -1,20 +1,5 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "nextjs",
   "buildCommand": "npm run build",
-  "regions": ["fra1"],
-  "environmentVariablesRequired": {
-    "NEXT_PUBLIC_SUPABASE_URL": "Supabase > Project Settings > API > Project URL",
-    "NEXT_PUBLIC_SUPABASE_ANON_KEY": "Supabase > Project Settings > API > anon public key",
-    "SUPABASE_SERVICE_ROLE_KEY": "Supabase > Project Settings > API > service_role key (secreta, solo server-side)",
-    "ANTHROPIC_API_KEY": "console.anthropic.com > API Keys",
-    "TRIGGER_SECRET_KEY": "Trigger.dev > Project settings > API keys",
-    "TRIGGER_API_URL": "Trigger.dev > Project settings > API URL (self-hosted) o la URL por defecto de Trigger.dev Cloud",
-    "RESEND_API_KEY": "Resend > API Keys",
-    "RESEND_FROM_EMAIL": "Remitente verificado en Resend; opcional, cae a onboarding@resend.dev si se omite (no válido en producción)",
-    "STRIPE_SECRET_KEY": "Stripe Dashboard > Developers > API keys (reservada, sin código que la use todavía)",
-    "STRIPE_PUBLISHABLE_KEY": "Stripe Dashboard > Developers > API keys (reservada, sin código que la use todavía)",
-    "STRIPE_WEBHOOK_SECRET": "Stripe Dashboard > Developers > Webhooks > signing secret del endpoint (reservada, sin código que la use todavía)",
-    "NEXT_PUBLIC_APP_URL": "Dominio público de producción (p. ej. https://adstudio.tudominio.com); opcional, cae al origen de la request si se omite"
-  }
+  "regions": ["fra1"]
 }
