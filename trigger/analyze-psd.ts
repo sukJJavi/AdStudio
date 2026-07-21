@@ -1,11 +1,26 @@
 import { task, metadata } from "@trigger.dev/sdk/v3";
-import { readPsd } from "ag-psd";
+import { createCanvas, createImageData } from "canvas";
+import { readPsd, initializeCanvas } from "ag-psd";
 import type { Layer } from "ag-psd";
 import sharp from "sharp";
 import { createTriggerSupabaseClient } from "@/lib/supabase/trigger-client";
 import { classifyLayerImage } from "@/lib/claude/vision";
 import { getIABFormatById } from "@/lib/iab/specs";
 import { analyzeProjectIncidents } from "@/lib/iab/incident-analyzer";
+
+// ag-psd necesita Canvas incluso con `useImageData: true`: el decodificador de
+// capas (createImageDataBitDepth) llama a createCanvas/createImageData de forma
+// incondicional para construir el buffer de píxeles antes de exponerlo como
+// imageData plano. Node no trae Canvas nativo, así que hay que inicializarlo
+// con el paquete `canvas` antes de cualquier readPsd().
+// `canvas`'s `Canvas` no implementa la interfaz completa de `HTMLCanvasElement`
+// (falta captureStream, toBlob, etc., irrelevantes para el uso que hace ag-psd
+// de él como superficie de pintura 2D), de ahí el cast acotado a la firma que
+// initializeCanvas espera.
+initializeCanvas(
+  createCanvas as unknown as (width: number, height: number) => HTMLCanvasElement,
+  createImageData as unknown as (width: number, height: number) => ImageData,
+);
 
 type AnalyzePsdPayload = {
   projectId: string;
