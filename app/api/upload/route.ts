@@ -115,23 +115,43 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const { count: psdCount } = await supabase
+  const { data: assets, error: assetsError } = await supabase
     .from("adstudio_assets")
-    .select("id", { count: "exact", head: true })
-    .eq("project_id", projectId)
-    .eq("layer_type", "psd");
+    .select("id, layer_type")
+    .eq("project_id", projectId);
 
-  const { count: excelCount } = await supabase
-    .from("adstudio_assets")
-    .select("id", { count: "exact", head: true })
-    .eq("project_id", projectId)
-    .eq("layer_type", "excel");
-
-  let analysisTriggered = false;
-  if ((psdCount ?? 0) > 0 && (excelCount ?? 0) > 0) {
-    const result = await triggerAnalysis(projectId);
-    analysisTriggered = result.ok;
+  console.log("Assets en proyecto:", assets);
+  if (assetsError) {
+    console.error("Error leyendo assets del proyecto tras el upload:", assetsError);
   }
 
-  return NextResponse.json({ asset, analysisTriggered }, { status: 201 });
+  const hasPsd = (assets ?? []).some((a) => a.layer_type === "psd");
+  const hasExcel = (assets ?? []).some((a) => a.layer_type === "excel");
+
+  console.log("¿Hay PSD?", hasPsd);
+  console.log("¿Hay Excel?", hasExcel);
+
+  let analysisTriggered = false;
+  let analysisError: string | null = null;
+
+  if (hasPsd && hasExcel) {
+    console.log("Disparando análisis...");
+    try {
+      const result = await triggerAnalysis(projectId);
+      analysisTriggered = result.ok;
+      if (!result.ok) {
+        // "Job already running" (429) es esperable si ya hay un análisis en curso —
+        // no es un fallo real, solo no hace falta lanzar otro.
+        console.log("triggerAnalysis no lanzó un job nuevo:", result.status, result.error);
+        if (result.status !== 429) analysisError = result.error;
+      }
+    } catch (error) {
+      // Un fallo al hablar con Trigger.dev (p. ej. TRIGGER_SECRET_KEY mal configurada)
+      // no debe tirar abajo la respuesta del upload, que ya se completó con éxito.
+      console.error("triggerAnalysis lanzó una excepción:", error);
+      analysisError = error instanceof Error ? error.message : "Error desconocido al lanzar el análisis.";
+    }
+  }
+
+  return NextResponse.json({ asset, analysisTriggered, analysisError }, { status: 201 });
 }
