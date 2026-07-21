@@ -148,8 +148,16 @@ hace falta, en este orden:
    verificó localmente en esta sesión (fuera de Trigger.dev) sin errores. Pendiente confirmar
    dentro de un job real: que el entorno de Trigger.dev tiene salida de red hacia
    `fonts.googleapis.com` (si no, `loadGoogleFont` falla al no poder descargar la fuente — no hay
-   fallback a una fuente local) y que `@resvg/resvg-js` (binario nativo prebuilt) tiene un binario
-   compatible con la arquitectura/SO del runtime de Trigger.dev.
+   fallback a una fuente local), y que `sharp`/`@resvg/resvg-js` cargan el binario nativo
+   correcto en el runtime Linux de Trigger.dev — desarrollamos en Windows, así que
+   `node_modules` local solo trae el binario `win32-x64-msvc` (`npm install` no descarga el de
+   Linux aunque se declare en `optionalDependencies`: el filtro de plataforma de npm mira el
+   `os`/`cpu` que cada paquete de binario declara en su propio `package.json`, no dónde lo listamos
+   nosotros — se comprobó empíricamente en esta sesión). `trigger.config.ts` ya declara ambos
+   paquetes en `build.external` para que Trigger.dev no empaquete el binario de Windows y los
+   instale de cero en su propio build de Linux (mecanismo documentado por Trigger.dev
+   específicamente para paquetes con binario nativo, `sharp` incluido en su propio ejemplo) —
+   pendiente confirmar que efectivamente resuelve el binario `linux-x64-gnu` en un deploy real.
 5. **Resend real**: confirmar que los emails de "master listo" y "cambios solicitados" llegan,
    con `RESEND_FROM_EMAIL` apuntando a un dominio verificado (el remitente de pruebas
    `onboarding@resend.dev` no es apto para producción).
