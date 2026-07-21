@@ -14,6 +14,7 @@ const PHASES: Phase[] = [
   { key: "brief", label: "Brief", href: (id) => `/project/${id}/brief` },
   { key: "upload", label: "Upload", href: (id) => `/project/${id}/upload` },
   { key: "analysis", label: "Analysis", href: (id) => `/project/${id}/analysis` },
+  { key: "layers", label: "Capas", href: (id) => `/project/${id}/layers` },
   { key: "master", label: "Master", href: (id) => `/project/${id}/master` },
   { key: "production", label: "Production", href: (id) => `/project/${id}/production` },
   { key: "delivery", label: "Delivery", href: (id) => `/project/${id}/delivery` },

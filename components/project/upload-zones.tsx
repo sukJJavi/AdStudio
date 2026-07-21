@@ -308,6 +308,14 @@ export function UploadZones({
           <CardTitle>Zona A — PSD(s)</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
+          <a
+            href="/guide/psd"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="w-fit text-xs text-primary underline underline-offset-2 hover:no-underline"
+          >
+            ¿Cómo preparar tu PSD?
+          </a>
           <DropArea
             label="Arrastra 1 o 2 archivos .psd"
             hint="Máximo 100MB cada uno"

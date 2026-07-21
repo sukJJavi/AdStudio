@@ -78,12 +78,36 @@ create table if not exists adstudio_assets (
   -- Bloque 3: metadata de capas de texto ({ fontName, fontSize, content }),
   -- ver trigger/analyze-psd.ts. Vacío ('{}') para el resto de capas/archivos.
   metadata jsonb not null default '{}',
+  -- Bloque 4 (editor de capas): frame detectado desde la carpeta padre del
+  -- PSD (null si no se pudo detectar), persistent si la capa aparece en
+  -- todos los frames, discarded si el usuario la descarta en el editor,
+  -- z_index para el orden de apilado, blend_mode/opacity/layer_bounds
+  -- extraídos de ag-psd, text_content para capas de texto editables.
+  frame integer default null,
+  persistent boolean not null default false,
+  discarded boolean not null default false,
+  z_index integer not null default 0,
+  blend_mode text default null,
+  opacity numeric default 1,
+  text_content text default null,
+  -- { x, y, width, height } en píxeles relativos al canvas
+  layer_bounds jsonb default null,
   created_at timestamptz not null default now()
 );
 
 alter table adstudio_assets add column if not exists metadata jsonb default '{}';
 update adstudio_assets set metadata = '{}' where metadata is null;
 alter table adstudio_assets alter column metadata set not null;
+
+alter table adstudio_assets
+  add column if not exists frame integer default null,
+  add column if not exists persistent boolean default false,
+  add column if not exists discarded boolean default false,
+  add column if not exists z_index integer default 0,
+  add column if not exists blend_mode text default null,
+  add column if not exists opacity numeric default 1,
+  add column if not exists text_content text default null,
+  add column if not exists layer_bounds jsonb default null;
 
 -- Masters generados (Bloque 2). Un proyecto puede tener varias variantes
 -- (una por formato IAB usado como canvas); is_primary marca la usada para

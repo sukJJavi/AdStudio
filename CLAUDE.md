@@ -25,14 +25,17 @@ adaptaciones por formato, animación y exportación.
     /brief            → paso 1: datos campaña + formatos
     /upload           → paso 2: subida PSD + Excel + animación
     /analysis         → paso 3: informe de incidencias
-    /master           → paso 4: preview y aprobación master
-    /production       → paso 5: progreso de adaptaciones
-    /delivery         → paso 6: descarga ZIP + preview cliente
+    /layers           → paso 4: editor de capas (frame, clasificación, orden, descarte)
+    /master           → paso 5: preview y aprobación master
+    /production       → paso 6: progreso de adaptaciones
+    /delivery         → paso 7: descarga ZIP + preview cliente
   /approve/[token]    → página pública aprobación cliente (sin auth)
+  /guide/psd          → guía pública de preparación de PSD (sin auth)
   /api
     /brief            → CRUD brief
     /upload           → recibe archivos → Supabase Storage
     /analysis         → lanza Trigger.dev job de análisis
+    /layers           → GET/[projectId] lista capas, PATCH/[assetId] edita una, POST/[projectId]/reorder batch z_index
     /master           → generate, status/[projectId], approve-link → lanza render-master.ts
     /master/approve, /master/request-changes → aprobación pública del master (sin sesión)
     /production       → start, status/[projectId] → lanza render-adaptations.ts
@@ -40,7 +43,9 @@ adaptaciones por formato, animación y exportación.
     /stripe           → webhooks Stripe
 
 /trigger
-  /analyze-psd.ts     → job: ag-psd + Claude Vision por capas (+ fontName/fontSize/content de capas de texto)
+  /analyze-psd.ts     → job: ag-psd + Claude Vision por capas (+ fontName/fontSize/content de capas de texto;
+                          aplana el árbol de carpetas detectando frame/persistent desde el nombre de carpeta,
+                          más blend_mode/opacity/layer_bounds/z_index por capa — ver editor de capas)
   /validate-excel.ts  → job: parseo + validación copys
   /render-master.ts   → job: JPG/PNG (Satori+Resvg) + HTML5 del master, aplica font_primary del proyecto
   /render-adaptations.ts → job: todos los formatos no bloqueados → JPG (Satori+Resvg) + HTML5 animado → ZIP
@@ -68,7 +73,18 @@ adaptaciones por formato, animación y exportación.
 - users, workspaces
 - projects (brief, status, tier snapshot, font_primary/font_secondary)
 - formats (por proyecto: dimensiones, copy, status, incidencias)
-- assets (capas extraídas del PSD, clasificadas; metadata jsonb con fontName/fontSize/content en capas de texto)
+- assets (capas extraídas del PSD, clasificadas; metadata jsonb con fontName/fontSize/content en capas de texto).
+  Campos del editor de capas (Bloque 4, ver `app/project/[id]/layers`):
+  | campo | tipo | uso |
+  |---|---|---|
+  | frame | integer \| null | frame detectado (o elegido en el editor); null si no aplica |
+  | persistent | boolean | capa presente en todos los frames; si true, frame siempre null |
+  | discarded | boolean | descartada por el usuario, no se usa en master ni adaptaciones |
+  | z_index | integer | orden de apilado dentro de su frame |
+  | blend_mode | text \| null | modo de fusión del PSD (`layer.blendMode`) |
+  | opacity | numeric | 0–1, `layer.opacity / 255` |
+  | text_content | text \| null | contenido editable de capas de texto |
+  | layer_bounds | jsonb \| null | `{ x, y, width, height }` en px relativos al canvas del PSD |
 - masters (variantes de master generadas, una por formato IAB usado como canvas; is_primary)
 - changes (tipo A/B/C/D/E, formatos afectados, status)
 - approval_tokens (UUID → project, expires_at, approved_at)

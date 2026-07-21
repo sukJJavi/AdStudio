@@ -73,6 +73,24 @@ export type TextLayerMetadata = {
   content?: string | null;
 };
 
+/** { x, y, width, height } en píxeles relativos al canvas — ver adstudio_assets.layer_bounds. */
+export type LayerBounds = { x: number; y: number; width: number; height: number };
+
+export const LAYER_CLASSIFICATIONS = [
+  "logo",
+  "imagen_principal",
+  "claim",
+  "subclaim",
+  "cta",
+  "disclaimer",
+  "fondo",
+  "decorativo",
+  "texto",
+  "desconocido",
+] as const;
+
+export type LayerClassification = (typeof LAYER_CLASSIFICATIONS)[number];
+
 export type ProjectAsset = {
   id: string;
   project_id: string;
@@ -86,6 +104,19 @@ export type ProjectAsset = {
   quality_score: number | null;
   status: AssetStatus;
   metadata: TextLayerMetadata | Record<string, never>;
+  /** Frame detectado desde la carpeta padre del PSD (null si no se detectó o si es persistente). */
+  frame: number | null;
+  /** Capa presente en todos los frames (fuera de cualquier carpeta "Frame N"). */
+  persistent: boolean;
+  /** Descartada por el usuario en el editor de capas — no se usa en el master ni en las adaptaciones. */
+  discarded: boolean;
+  /** Orden de apilado dentro de su frame (mayor = más arriba). */
+  z_index: number;
+  blend_mode: string | null;
+  opacity: number | null;
+  /** Contenido editable de capas de texto (editor de capas). */
+  text_content: string | null;
+  layer_bounds: LayerBounds | null;
   created_at: string;
 };
 

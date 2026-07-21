@@ -120,8 +120,8 @@ export function AnalysisView({
         </Button>
 
         {isCompleted && (
-          <Button disabled={!hasReadyFormat} onClick={() => router.push(`/project/${projectId}/master`)}>
-            Continuar al master
+          <Button disabled={!hasReadyFormat} onClick={() => router.push(`/project/${projectId}/layers`)}>
+            Continuar
           </Button>
         )}
       </div>

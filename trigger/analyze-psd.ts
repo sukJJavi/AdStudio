@@ -27,7 +27,45 @@ type AnalyzePsdPayload = {
 };
 
 function layerTypeOf(layer: Layer): string {
-  return layer.text ? "texto" : layer.children ? "grupo" : "imagen";
+  return layer.text ? "texto" : "imagen";
+}
+
+type FrameContext = { frame: number | null; persistent: boolean };
+
+/**
+ * Detecta si el nombre de una carpeta del PSD marca un frame ("Frame 0",
+ * "f0", "fr1", "F2"...) o la carpeta "Persistente"/"Persistent" — ver
+ * `app/guide/psd/page.tsx` para la convención de nombrado que se le pide
+ * al usuario. Si no matchea ninguno de los dos patrones, devuelve null
+ * (la carpeta no aporta contexto de frame, p. ej. una subcarpeta de
+ * organización interna como "textos").
+ */
+function detectFrameFromFolderName(name: string | undefined): FrameContext | null {
+  if (!name) return null;
+  if (/persistente|persistent/i.test(name)) return { frame: null, persistent: true };
+  const match = name.match(/\bf(?:rame|r)?[\s_-]*?(\d+)\b/i);
+  if (match) return { frame: Number(match[1]), persistent: false };
+  return null;
+}
+
+type FlattenedLayer = { layer: Layer; frame: number | null; persistent: boolean };
+
+/**
+ * Aplana el árbol de capas del PSD en orden original: las carpetas
+ * (`layer.children`) no generan asset propio, solo aportan contexto de
+ * frame a las capas que contienen (heredado por las subcarpetas que no
+ * matchean ningún patrón de frame). Capas sueltas fuera de cualquier
+ * carpeta de frame quedan con frame=null, persistent=false — el usuario
+ * las clasifica manualmente en el editor de capas.
+ */
+function flattenLayers(layers: Layer[], inherited: FrameContext, out: FlattenedLayer[]): void {
+  for (const layer of layers) {
+    if (layer.children) {
+      flattenLayers(layer.children, detectFrameFromFolderName(layer.name) ?? inherited, out);
+      continue;
+    }
+    out.push({ layer, frame: inherited.frame, persistent: inherited.persistent });
+  }
 }
 
 type TextLayerMetadata = { fontName: string | null; fontSize: number | null; content: string | null };
@@ -107,13 +145,21 @@ export const analyzePsd = task({
       });
 
       const dpi = psd.imageResources?.resolutionInfo?.horizontalResolution ?? null;
-      const layers = psd.children ?? [];
+
+      const flattened: FlattenedLayer[] = [];
+      flattenLayers(psd.children ?? [], { frame: null, persistent: false }, flattened);
 
       const insertedRows: { id: string; layer: Layer }[] = [];
 
-      for (const layer of layers) {
+      for (let z = 0; z < flattened.length; z++) {
+        const { layer, frame, persistent } = flattened[z];
         const width = layer.right != null && layer.left != null ? layer.right - layer.left : null;
         const height = layer.bottom != null && layer.top != null ? layer.bottom - layer.top : null;
+        const layerBounds =
+          width != null && height != null && layer.left != null && layer.top != null
+            ? { x: layer.left, y: layer.top, width, height }
+            : null;
+        const hidden = layer.hidden === true;
 
         const { data: inserted, error: insertError } = await supabase
           .from("adstudio_assets")
@@ -127,14 +173,25 @@ export const analyzePsd = task({
             dpi,
             file_path: null,
             quality_score: null,
-            status: "processing",
+            // Las capas ocultas del PSD se detectan pero se descartan
+            // automáticamente (ver app/guide/psd/page.tsx).
+            status: hidden ? "processed" : "processing",
+            frame,
+            persistent,
+            discarded: hidden,
+            z_index: z,
+            blend_mode: layer.blendMode ?? null,
+            opacity: (layer.opacity ?? 255) / 255,
+            layer_bounds: layerBounds,
+            text_content: layer.text?.text ?? null,
           })
           .select()
           .single();
 
         if (!insertError && inserted) {
-          insertedRows.push({ id: inserted.id as string, layer });
           layersExtracted += 1;
+          // Las capas ocultas no se aplanan a PNG ni se clasifican con Claude Vision.
+          if (!hidden) insertedRows.push({ id: inserted.id as string, layer });
         }
       }
 
@@ -194,7 +251,7 @@ export const analyzePsd = task({
         layersClassified += 1;
       }
 
-      // Capas sin datos de imagen (p. ej. grupos) quedan extraídas pero sin clasificar.
+      // Capas sin datos de imagen (p. ej. capas vectoriales/de ajuste) quedan extraídas pero sin clasificar.
       const unflattenable = insertedRows.filter(({ layer }) => !layer.imageData);
       if (unflattenable.length > 0) {
         await supabase

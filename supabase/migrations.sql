@@ -106,3 +106,18 @@ alter table adstudio_projects alter column font_primary set not null;
 alter table adstudio_assets add column if not exists metadata jsonb default '{}';
 update adstudio_assets set metadata = '{}' where metadata is null;
 alter table adstudio_assets alter column metadata set not null;
+
+-- =========================================================
+-- Bloque 4 — editor de capas
+-- =========================================================
+
+alter table adstudio_assets
+  add column if not exists frame integer default null,
+  add column if not exists persistent boolean default false,
+  add column if not exists discarded boolean default false,
+  add column if not exists z_index integer default 0,
+  add column if not exists blend_mode text default null,
+  add column if not exists opacity numeric default 1,
+  add column if not exists text_content text default null,
+  add column if not exists layer_bounds jsonb default null;
+  -- layer_bounds: { x, y, width, height } en píxeles relativos al canvas
