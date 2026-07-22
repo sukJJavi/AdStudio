@@ -57,7 +57,7 @@ export default async function MasterPage({
             step: null,
             progress: null,
             masters: [],
-            html5Url: null,
+            hasHtml5: false,
             zipSizeBytes: null,
           }
         }

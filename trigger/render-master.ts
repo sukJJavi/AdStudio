@@ -166,9 +166,12 @@ export const renderMaster = task({
 
     const basePath = `${payload.projectId}/master/${format.iab_format}`;
     const masterFolder = `${payload.projectId}/master`;
-    // Fix 5: sube el HTML como Buffer con contentType explícito — algunos backends
-    // de Storage no infieren bien el Content-Type de un string plano y el iframe
-    // del preview termina descargando/mostrando el código fuente en vez de renderizarlo.
+    // El HTML5 ya NO se sirve desde Storage (las signed URLs de Supabase Storage
+    // añaden `Content-Disposition: attachment`, forzando la descarga en vez de
+    // renderizar en el iframe) — se sirve desde adstudio_projects.master_html
+    // (ver saveHtml5Master arriba) vía app/api/preview/[projectId]/route.ts.
+    // Aquí solo queda el `.html` suelto por formato, para quien descargue del
+    // Storage directamente fuera de la app.
     const htmlBuffer = Buffer.from(html, "utf-8");
 
     await Promise.all([
@@ -181,20 +184,6 @@ export const renderMaster = task({
       supabase.storage
         .from("adstudio-projects")
         .upload(`${basePath}.html`, htmlBuffer, { contentType: "text/html", upsert: true }),
-      // Ruta estable (independiente del iab_format elegido como master) para el
-      // preview en iframe de app/project/[id]/master — junto a las mismas capas
-      // PNG/JPG que referencia por filename relativo, para que cargue sin roturas.
-      supabase.storage
-        .from("adstudio-projects")
-        .upload(`${masterFolder}/index.html`, htmlBuffer, { contentType: "text/html", upsert: true }),
-      ...pngEntries.map((entry) =>
-        supabase.storage
-          .from("adstudio-projects")
-          .upload(`${masterFolder}/${entry.filename}`, entry.buffer, {
-            contentType: entry.filename.toLowerCase().endsWith(".jpg") ? "image/jpeg" : "image/png",
-            upsert: true,
-          }),
-      ),
       supabase.storage
         .from("adstudio-projects")
         .upload(`${masterFolder}/master.zip`, zipBuffer, {

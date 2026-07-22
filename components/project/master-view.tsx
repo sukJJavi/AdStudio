@@ -188,11 +188,11 @@ export function MasterView({
               <CardTitle>Master</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              {status.html5Url ? (
+              {status.hasHtml5 ? (
                 <div className="flex flex-wrap items-start gap-4">
                   <div className="max-h-[70vh] max-w-full overflow-auto rounded-md border border-border">
                     <iframe
-                      src={status.html5Url}
+                      src={`/api/preview/${projectId}`}
                       width={primaryMaster.width}
                       height={primaryMaster.height}
                       style={{ border: 0, display: "block" }}
@@ -221,6 +221,13 @@ export function MasterView({
                     <img src={primaryMaster.jpgUrl} alt="Preview del master" className="block" />
                   )}
                 </div>
+              )}
+              {status.hasHtml5 && (
+                <p className="text-xs text-muted-foreground">
+                  El iframe solo verifica estructura y animación — los assets (PNG/JPG) no cargan aquí
+                  porque se referencian por nombre de fichero relativo. Descarga el ZIP para ver el
+                  banner completo.
+                </p>
               )}
               <p className="text-sm text-muted-foreground">
                 {primaryMaster.width}×{primaryMaster.height}px
