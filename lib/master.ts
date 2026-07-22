@@ -246,7 +246,7 @@ export async function refineMasterHtml(projectId: string, changeDescription: str
 
   const { data: project, error: projectError } = await supabase
     .from("adstudio_projects")
-    .select("master_html, tier")
+    .select("master_html, user_id")
     .eq("id", projectId)
     .single();
 
@@ -258,7 +258,32 @@ export async function refineMasterHtml(projectId: string, changeDescription: str
     return { ok: false, status: 400, error: "Todavía no hay un master generado para aplicar cambios." };
   }
 
-  const tier = (project.tier as Tier) ?? "starter";
+  // El tier/rondas autoritativo es la suscripción DEL USUARIO AUTENTICADO
+  // (adstudio_subscriptions), no `adstudio_projects.tier` — ese campo es solo
+  // un snapshot tomado al crear el proyecto y no se actualiza si el usuario
+  // cambia de plan después. Bug previo: se leía ese snapshot y quedaba
+  // desincronizado con la suscripción real del usuario.
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  const userId = user?.id ?? (project.user_id as string);
+  console.log("User ID:", userId);
+
+  const { data: subscription, error: subscriptionError } = await supabase
+    .from("adstudio_subscriptions")
+    .select("tier, rounds_limit")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  console.log("Subscription query result:", { data: subscription, error: subscriptionError });
+  console.log("Tier check:", subscription?.tier);
+
+  // Sin fila de suscripción (p. ej. cuentas antiguas o el registro del trial
+  // todavía no se creó) -> no bloquear con 403: usar los límites por defecto
+  // del tier 'starter' en vez de tratar al usuario como sin acceso. El 403
+  // por plan solo debe darse si SÍ hay suscripción y su tier no incluye esto.
+  const tier = (subscription?.tier as Tier | undefined) ?? "starter";
+  const roundsLimit = subscription ? subscription.rounds_limit : TIER_ROUNDS_LIMIT.starter;
 
   if (!TIER_ALLOWED_CHANGE_TYPES[tier].includes(REFINE_CHANGE_TYPE)) {
     return {
@@ -268,21 +293,20 @@ export async function refineMasterHtml(projectId: string, changeDescription: str
     };
   }
 
-  const roundsLimit = TIER_ROUNDS_LIMIT[tier];
-  if (roundsLimit != null) {
-    const { count } = await supabase
-      .from("adstudio_changes")
-      .select("id", { count: "exact", head: true })
-      .eq("project_id", projectId)
-      .eq("type", REFINE_CHANGE_TYPE);
+  const { count: changesCount } = await supabase
+    .from("adstudio_changes")
+    .select("id", { count: "exact", head: true })
+    .eq("project_id", projectId)
+    .eq("type", REFINE_CHANGE_TYPE);
 
-    if ((count ?? 0) >= roundsLimit) {
-      return {
-        ok: false,
-        status: 403,
-        error: `Has agotado las ${roundsLimit} ronda${roundsLimit === 1 ? "" : "s"} de cambios de tu plan.`,
-      };
-    }
+  console.log("Rounds check:", roundsLimit, "changes used:", changesCount);
+
+  if (roundsLimit != null && (changesCount ?? 0) >= roundsLimit) {
+    return {
+      ok: false,
+      status: 403,
+      error: `Has agotado las ${roundsLimit} ronda${roundsLimit === 1 ? "" : "s"} de cambios de tu plan.`,
+    };
   }
 
   const client = createClaudeClient();
