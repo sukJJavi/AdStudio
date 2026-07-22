@@ -21,6 +21,7 @@ initializeCanvas(
   createCanvas as unknown as (width: number, height: number) => HTMLCanvasElement,
   createImageData as unknown as (width: number, height: number) => ImageData,
 );
+console.log("Canvas inicializado");
 
 type AnalyzePsdPayload = {
   projectId: string;
@@ -137,6 +138,8 @@ export const analyzePsd = task({
       metadata.set("progress", 0.2);
 
       const buffer = Buffer.from(await file.arrayBuffer());
+      console.log("PSD descargado, tamaño:", buffer.byteLength);
+
       let psd: ReturnType<typeof readPsd>;
       try {
         psd = readPsd(buffer, {
@@ -151,15 +154,36 @@ export const analyzePsd = task({
         continue;
       }
 
+      console.log("PSD leído:", {
+        width: psd.width,
+        height: psd.height,
+        children: psd.children?.length ?? 0,
+      });
+
       const dpi = psd.imageResources?.resolutionInfo?.horizontalResolution ?? null;
 
       const flattened: FlattenedLayer[] = [];
       flattenLayers(psd.children ?? [], { frame: null, persistent: false }, flattened);
 
+      console.log("Capas encontradas tras flatten:", flattened.length);
+
       const insertedRows: { id: string; layer: Layer }[] = [];
 
       for (let z = 0; z < flattened.length; z++) {
         const { layer, frame, persistent } = flattened[z];
+
+        console.log("Capa:", {
+          name: layer.name,
+          hidden: layer.hidden,
+          isGroup: !!layer.children,
+          hasImage: !!layer.imageData,
+          bounds: {
+            left: layer.left,
+            top: layer.top,
+            right: layer.right,
+            bottom: layer.bottom,
+          },
+        });
         const width = layer.right != null && layer.left != null ? layer.right - layer.left : null;
         const height = layer.bottom != null && layer.top != null ? layer.bottom - layer.top : null;
         const layerBounds =
