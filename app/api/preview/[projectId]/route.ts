@@ -33,7 +33,16 @@ export async function GET(
     return new NextResponse("Todavía no hay HTML5 de master generado.", { status: 404 });
   }
 
-  return new NextResponse(project.master_html, {
+  // El HTML de Claude referencia sus assets por filename relativo (src="background.jpg"),
+  // que no resuelve dentro de este iframe — reescribe esas rutas para que pasen por
+  // app/api/preview/[projectId]/assets/[filename]/route.ts, que sirve el PNG/JPG real
+  // desde Storage.
+  const html = project.master_html.replace(
+    /src="([^"]+\.(png|jpg|jpeg|gif))"/gi,
+    `src="/api/preview/${projectId}/assets/$1"`,
+  );
+
+  return new NextResponse(html, {
     status: 200,
     headers: {
       "Content-Type": "text/html; charset=utf-8",
