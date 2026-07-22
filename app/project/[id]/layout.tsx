@@ -13,7 +13,7 @@ export default async function ProjectLayout({
   const project = await getProject(id);
 
   return (
-    <div className="flex min-h-screen">
+    <div className="flex min-h-screen bg-[#0A0D14]">
       <ProjectSidebar projectId={id} />
       <div className="flex flex-1 flex-col">
         <ProjectHeader
@@ -21,7 +21,7 @@ export default async function ProjectLayout({
           producto={project.producto}
           tier={project.tier}
         />
-        <main className="flex-1 bg-background px-6 py-6">{children}</main>
+        <main className="flex-1 bg-[#0A0D14] px-6 py-6">{children}</main>
       </div>
     </div>
   );

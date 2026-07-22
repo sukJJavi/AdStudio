@@ -47,3 +47,4 @@ next-env.d.ts
 *.psd
 *.xlsx
 *.xls
+/designsystem

@@ -14,6 +14,13 @@ const LEVEL_ICON: Record<IncidenciaLevel, string> = {
   aviso: "🟢",
 };
 
+/** Colores semánticos de severidad del design system (designsystem/adstudio-tokens.css). */
+const LEVEL_CLASSES: Record<IncidenciaLevel, string> = {
+  critico: "border-[rgba(240,68,68,0.40)] bg-[rgba(240,68,68,0.12)] text-[#FF8A8A]",
+  atencion: "border-[rgba(245,165,36,0.40)] bg-[rgba(245,165,36,0.12)] text-[#F5C46B]",
+  aviso: "border-[rgba(52,199,89,0.40)] bg-[rgba(52,199,89,0.12)] text-[#7BE096]",
+};
+
 const STATUS_BADGE: Record<
   AnalysisFormatStatus["derivedStatus"],
   { label: string; variant: "default" | "secondary" | "destructive" | "outline" }
@@ -25,12 +32,12 @@ const STATUS_BADGE: Record<
 
 function IncidenciaRow({ incidencia, showDetail }: { incidencia: Incidencia; showDetail: boolean }) {
   return (
-    <li className="flex items-start gap-2">
+    <li className={cn("flex items-start gap-2 rounded-md border px-2 py-1.5", LEVEL_CLASSES[incidencia.level])}>
       <span aria-hidden>{LEVEL_ICON[incidencia.level]}</span>
       <span>
         {incidencia.message}
         {showDetail && (
-          <span className="ml-1 text-xs text-muted-foreground">
+          <span className="ml-1 text-xs opacity-80">
             ({incidencia.code}
             {incidencia.asset_id ? ` · asset ${incidencia.asset_id.slice(0, 8)}` : ""})
           </span>

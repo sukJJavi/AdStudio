@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
 import type { MasterChangeEntry, MasterStatusResponse } from "@/lib/master";
 
 const STEP_LABELS: Record<string, string> = {
@@ -224,131 +225,136 @@ export function MasterView({
 
       {hasMaster && !isGenerating && primaryMaster && (
         <div className="space-y-4">
-          <Card>
-            <CardHeader>
-              <CardTitle>Master</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              {status.hasHtml5 ? (
-                <div className="flex flex-wrap items-start gap-4">
-                  <div
-                    className="max-h-[70vh] max-w-full border border-border"
-                    style={{ borderRadius: 0, overflow: "hidden" }}
-                  >
-                    <iframe
-                      src={`/api/preview/${projectId}${previewNonce > 0 ? `?v=${previewNonce}` : ""}`}
-                      width={primaryMaster.width}
-                      height={primaryMaster.height}
-                      style={{ border: 0, display: "block", borderRadius: 0 }}
-                      title="Preview del master (HTML5)"
-                    />
-                  </div>
-                  {primaryMaster.jpgUrl && (
-                    <div className="flex flex-col items-start gap-1">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
-                        src={primaryMaster.jpgUrl}
-                        alt="Fallback JPG del master"
-                        className="w-32 rounded-md border border-border"
-                      />
-                      <p className="text-xs text-muted-foreground">
-                        JPG alternativo
-                        {primaryMaster.jpgSizeBytes != null ? ` (${formatBytes(primaryMaster.jpgSizeBytes)})` : ""}
-                      </p>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <div className="max-h-[70vh] overflow-auto rounded-md border border-border">
-                  {primaryMaster.jpgUrl && (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={primaryMaster.jpgUrl} alt="Preview del master" className="block" />
-                  )}
-                </div>
-              )}
-              {status.hasHtml5 && (
-                <p className="text-xs text-muted-foreground">
-                  El iframe solo verifica estructura y animación — los assets (PNG/JPG) no cargan aquí
-                  porque se referencian por nombre de fichero relativo. Descarga el ZIP para ver el
-                  banner completo.
-                </p>
-              )}
-              <p className="text-sm text-muted-foreground">
-                {primaryMaster.width}×{primaryMaster.height}px
-                {status.zipSizeBytes != null ? ` · ZIP ${formatBytes(status.zipSizeBytes)}` : ""}
-              </p>
-
-              <div className="flex flex-wrap items-center gap-3">
-                {secondLargestFormat && !variantAlreadyExists && (
-                  <Button
-                    variant="outline"
-                    disabled={generatingVariant}
-                    onClick={() => handleGenerate(secondLargestFormat.iabFormat, false)}
-                  >
-                    {generatingVariant
-                      ? "Lanzando..."
-                      : `Generar segunda variante (${secondLargestFormat.nombreSoporte})`}
-                  </Button>
-                )}
-
-                <Button onClick={handleSendApproval} disabled={sendingApproval}>
-                  {sendingApproval ? "Enviando..." : "Enviar al cliente para aprobación"}
-                </Button>
-              </div>
-
-              {genError && <p className="text-sm text-destructive">{genError}</p>}
-              {approvalError && <p className="text-sm text-destructive">{approvalError}</p>}
-              {approvalUrl && (
-                <p className="text-sm text-green-600">
-                  Enviado. Link de aprobación: <span className="break-all">{approvalUrl}</span>
-                </p>
-              )}
-              {status.projectStatus === "approved" && (
-                <p className="text-sm text-green-600">El cliente ya aprobó este master.</p>
-              )}
-            </CardContent>
-          </Card>
-
-          {status.hasHtml5 && (
-            <Card>
+          <div className={cn("grid gap-4", status.hasHtml5 ? "lg:grid-cols-2" : "grid-cols-1")}>
+            <Card className="border-[#232935] bg-[#12161F]">
               <CardHeader>
-                <CardTitle>Solicitar cambio</CardTitle>
+                <CardTitle className="font-display">Master</CardTitle>
               </CardHeader>
-              <CardContent className="space-y-3">
-                <Textarea
-                  placeholder={
-                    'Describe el cambio que quieres aplicar...\n' +
-                    'Ej: "El background se mueve demasiado rápido, ponlo a 1.2s"\n' +
-                    'Ej: "El texto del frame 2 debería aparecer 500ms más tarde"\n' +
-                    'Ej: "El CTA debería quedarse visible en el último frame"'
-                  }
-                  value={changeText}
-                  onChange={(e) => setChangeText(e.target.value)}
-                  rows={4}
-                />
-                <Button onClick={handleApplyChange} disabled={applyingChange || !changeText.trim()}>
-                  {applyingChange ? "Aplicando..." : "Aplicar cambio"}
-                </Button>
-                {changeError && <p className="text-sm text-destructive">{changeError}</p>}
-
-                {changes.length > 0 && (
-                  <div className="space-y-2 pt-2">
-                    <p className="text-xs font-medium text-muted-foreground">Historial de cambios</p>
-                    <ul className="space-y-1.5">
-                      {changes.map((change) => (
-                        <li key={change.id} className="rounded-md border border-border p-2 text-xs">
-                          <p>{change.description}</p>
-                          <p className="text-muted-foreground">
-                            {new Date(change.requestedAt).toLocaleString()}
-                          </p>
-                        </li>
-                      ))}
-                    </ul>
+              <CardContent className="space-y-4">
+                {status.hasHtml5 ? (
+                  <div className="flex flex-wrap items-start gap-4 bg-[#070A0F] p-4">
+                    <div
+                      className="max-h-[70vh] max-w-full border border-[#232935]"
+                      style={{ borderRadius: 0, overflow: "hidden" }}
+                    >
+                      <iframe
+                        src={`/api/preview/${projectId}${previewNonce > 0 ? `?v=${previewNonce}` : ""}`}
+                        width={primaryMaster.width}
+                        height={primaryMaster.height}
+                        style={{ border: 0, display: "block", borderRadius: 0 }}
+                        title="Preview del master (HTML5)"
+                      />
+                    </div>
+                    {primaryMaster.jpgUrl && (
+                      <div className="flex flex-col items-start gap-1">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={primaryMaster.jpgUrl}
+                          alt="Fallback JPG del master"
+                          className="w-32 border border-[#232935]"
+                        />
+                        <p className="text-xs text-[#9AA3B2]">
+                          JPG alternativo
+                          {primaryMaster.jpgSizeBytes != null ? ` (${formatBytes(primaryMaster.jpgSizeBytes)})` : ""}
+                        </p>
+                      </div>
+                    )}
                   </div>
+                ) : (
+                  <div className="max-h-[70vh] overflow-auto border border-[#232935] bg-[#070A0F] p-4">
+                    {primaryMaster.jpgUrl && (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={primaryMaster.jpgUrl} alt="Preview del master" className="block" />
+                    )}
+                  </div>
+                )}
+                {status.hasHtml5 && (
+                  <p className="text-xs text-[#9AA3B2]">
+                    El iframe solo verifica estructura y animación — los assets (PNG/JPG) no cargan aquí
+                    porque se referencian por nombre de fichero relativo. Descarga el ZIP para ver el
+                    banner completo.
+                  </p>
+                )}
+                <p className="font-mono text-sm text-[#9AA3B2]">
+                  {primaryMaster.width}×{primaryMaster.height}px
+                  {status.zipSizeBytes != null ? ` · ZIP ${formatBytes(status.zipSizeBytes)}` : ""}
+                </p>
+
+                <div className="flex flex-wrap items-center gap-3">
+                  {secondLargestFormat && !variantAlreadyExists && (
+                    <Button
+                      variant="outline"
+                      disabled={generatingVariant}
+                      onClick={() => handleGenerate(secondLargestFormat.iabFormat, false)}
+                    >
+                      {generatingVariant
+                        ? "Lanzando..."
+                        : `Generar segunda variante (${secondLargestFormat.nombreSoporte})`}
+                    </Button>
+                  )}
+
+                  <Button onClick={handleSendApproval} disabled={sendingApproval}>
+                    {sendingApproval ? "Enviando..." : "Enviar al cliente para aprobación"}
+                  </Button>
+                </div>
+
+                {genError && <p className="text-sm text-destructive">{genError}</p>}
+                {approvalError && <p className="text-sm text-destructive">{approvalError}</p>}
+                {approvalUrl && (
+                  <p className="text-sm text-[#34C759]">
+                    Enviado. Link de aprobación: <span className="break-all">{approvalUrl}</span>
+                  </p>
+                )}
+                {status.projectStatus === "approved" && (
+                  <p className="text-sm text-[#34C759]">El cliente ya aprobó este master.</p>
                 )}
               </CardContent>
             </Card>
-          )}
+
+            {status.hasHtml5 && (
+              <Card className="border-[#232935] bg-[#12161F]">
+                <CardHeader>
+                  <CardTitle className="font-display">Solicitar cambio</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <Textarea
+                    placeholder={
+                      'Describe el cambio que quieres aplicar...\n' +
+                      'Ej: "El background se mueve demasiado rápido, ponlo a 1.2s"\n' +
+                      'Ej: "El texto del frame 2 debería aparecer 500ms más tarde"\n' +
+                      'Ej: "El CTA debería quedarse visible en el último frame"'
+                    }
+                    value={changeText}
+                    onChange={(e) => setChangeText(e.target.value)}
+                    rows={4}
+                    className="border-[#2E3644] bg-[#12161F] focus-visible:border-[#2E80FF]"
+                  />
+                  <Button onClick={handleApplyChange} disabled={applyingChange || !changeText.trim()}>
+                    {applyingChange ? "Aplicando..." : "Aplicar cambio"}
+                  </Button>
+                  {changeError && <p className="text-sm text-destructive">{changeError}</p>}
+
+                  {changes.length > 0 && (
+                    <div className="space-y-2 pt-2">
+                      <p className="font-mono text-xs uppercase tracking-wide text-[#5D6675]">
+                        Historial de cambios
+                      </p>
+                      <ul className="space-y-1.5">
+                        {changes.map((change) => (
+                          <li key={change.id} className="rounded-md border border-[#232935] bg-[#171C27] p-2 text-xs">
+                            <p className="text-[#34C759]">{change.description}</p>
+                            <p className="font-mono text-[#5D6675]">
+                              {new Date(change.requestedAt).toLocaleString()}
+                            </p>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+          </div>
 
           {otherMasters.length > 0 && (
             <Card>

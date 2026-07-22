@@ -4,12 +4,19 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/*
+ * Tailwind v4 is CSS-first (no tailwind.config.ts) — the AdStudio design
+ * system's tailwind.config.js (designsystem/tailwind.config.js, Tailwind v3
+ * JS config) is mirrored here under @theme, exactly as that file's own
+ * header comment recommends ("For v4, mirror these under @theme in CSS").
+ */
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-sans);
-  --font-mono: var(--font-geist-mono);
-  --font-heading: var(--font-sans);
+  --font-sans: var(--font-display);
+  --font-mono: var(--font-mono);
+  --font-heading: var(--font-display);
+  --font-display: var(--font-display);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
@@ -27,6 +34,7 @@
   --color-input: var(--input);
   --color-border: var(--border);
   --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
   --color-muted-foreground: var(--muted-foreground);
@@ -46,75 +54,178 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+
+  /* Extended AdStudio tokens (designsystem/tailwind.config.js theme.extend.colors) */
+  --color-sunken: var(--sunken);
+  --color-attention: var(--attention);
+  --color-attention-foreground: var(--attention-foreground);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-class-logo: var(--class-logo);
+  --color-class-headline: var(--class-headline);
+  --color-class-copy: var(--class-copy);
+  --color-class-image: var(--class-image);
+  --color-class-cta: var(--class-cta);
+  --color-class-bg: var(--class-bg);
+  --color-class-decor: var(--class-decor);
 }
+
+/* ==========================================================================
+   AdStudio Design System — shadcn/ui theme override
+   v1.0 · Dark production suite (designsystem/shadcn-theme.css)
+   AdStudio is dark-only: :root and .dark carry the same values.
+   ========================================================================== */
+
+:root, .dark {
+  /* Surfaces */
+  --background:          hsl(220 30% 6%);    /* #0A0D14 base           */
+  --foreground:          hsl(222 24% 92%);   /* #E6E9EF text           */
+
+  --card:                hsl(222 26% 10%);   /* #12161F surface        */
+  --card-foreground:     hsl(222 24% 92%);
+
+  --popover:             hsl(222 26% 12%);   /* #171C27 surface-raised */
+  --popover-foreground:  hsl(222 24% 92%);
+
+  /* Primary — Signal Blue */
+  --primary:             hsl(217 100% 59%);  /* #2E80FF                */
+  --primary-foreground:  hsl(220 30% 6%);    /* near-black on the blue */
+
+  /* Secondary — raised surface */
+  --secondary:           hsl(222 26% 12%);   /* #171C27                */
+  --secondary-foreground:hsl(222 24% 92%);
+
+  /* Muted */
+  --muted:               hsl(222 26% 10%);   /* #12161F                */
+  --muted-foreground:    hsl(219 12% 54%);   /* #9AA3B2 secondary text */
+
+  /* Accent — signal tint for hovers/highlights */
+  --accent:              hsl(222 26% 12%);
+  --accent-foreground:   hsl(217 100% 70%);
+
+  /* Destructive — Critical */
+  --destructive:            hsl(0 85% 62%);  /* #F04444                */
+  --destructive-foreground: hsl(220 30% 6%);
+
+  /* Borders, inputs, focus ring */
+  --border:              hsl(222 22% 17%);   /* #232935                */
+  --input:               hsl(221 21% 22%);   /* #2E3644 border-strong  */
+  --ring:                hsl(217 100% 59%);  /* #2E80FF                */
+
+  --radius: 0.75rem;                         /* 12px — lg              */
+
+  /* -- Extended AdStudio tokens (not part of stock shadcn) --------------- */
+  --sunken:              hsl(218 33% 5%);    /* #070A0F canvas wells   */
+
+  --attention:            hsl(38 91% 55%);   /* #F5A524                */
+  --attention-foreground: hsl(220 30% 6%);
+  --success:              hsl(142 59% 49%);  /* #34C759 ok / advisory  */
+  --success-foreground:   hsl(220 30% 6%);
+
+  /* Layer classification */
+  --class-logo:          hsl(225 100% 74%); /* #7C9CFF */
+  --class-headline:      hsl(258 100% 81%); /* #B79CFF */
+  --class-copy:          hsl(191 55% 64%);  /* #6FC3D6 */
+  --class-image:         hsl(168 44% 53%);  /* #4FBFA8 */
+  --class-cta:           hsl(340 100% 78%); /* #FF8FB0 */
+  --class-bg:            hsl(214 12% 53%);  /* #7A8494 */
+  --class-decor:         hsl(219 12% 60%);  /* #8892A3 */
+
+  /* Chart palette (severity + signal) */
+  --chart-1: hsl(217 100% 59%);  /* signal    */
+  --chart-2: hsl(142 59% 49%);   /* ok        */
+  --chart-3: hsl(38 91% 55%);    /* attention */
+  --chart-4: hsl(0 85% 62%);     /* critical  */
+  --chart-5: hsl(258 100% 81%);  /* headline  */
+}
+
+/* ==========================================================================
+   AdStudio Design System — CSS Custom Properties
+   v1.0 · Dark production suite (designsystem/adstudio-tokens.css)
+   Fonts: Space Grotesk (display/UI) + Alumni Sans Pinstripe (technical)
+   ========================================================================== */
 
 :root {
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
-}
+  /* ---- Surfaces & structure -------------------------------------------- */
+  --ads-bg:              #0A0D14; /* App base — deep slate, cool hue         */
+  --ads-sunken:          #070A0F; /* Canvas wells, viewports                 */
+  --ads-surface:         #12161F; /* Cards, panels                          */
+  --ads-surface-raised:  #171C27; /* Hover, active rows                     */
+  --ads-border:          #232935; /* Subtle low-contrast divider            */
+  --ads-border-strong:   #2E3644; /* Inputs, emphasized edges               */
 
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
-  --chart-1: oklch(0.87 0 0);
-  --chart-2: oklch(0.556 0 0);
-  --chart-3: oklch(0.439 0 0);
-  --chart-4: oklch(0.371 0 0);
-  --chart-5: oklch(0.269 0 0);
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(1 0 0 / 10%);
-  --sidebar-ring: oklch(0.556 0 0);
+  /* ---- Text ------------------------------------------------------------- */
+  --ads-text:            #E6E9EF; /* Headings, body                         */
+  --ads-text-secondary:  #9AA3B2; /* Supporting copy                        */
+  --ads-text-muted:      #5D6675; /* Mono labels, meta                      */
+
+  /* ---- Primary signal --------------------------------------------------- */
+  --ads-signal:          #2E80FF; /* Primary action, active, focus          */
+  --ads-signal-hover:    #4A93FF;
+  --ads-signal-tint:     rgba(46, 128, 255, 0.12);
+  --ads-signal-border:   rgba(46, 128, 255, 0.40);
+
+  /* ---- Semantic — incident severity ------------------------------------ */
+  --ads-critical:        #F04444; /* Blocking — must fix before delivery    */
+  --ads-critical-text:   #FF8A8A;
+  --ads-critical-tint:   rgba(240, 68, 68, 0.12);
+  --ads-critical-border: rgba(240, 68, 68, 0.40);
+
+  --ads-attention:        #F5A524; /* Warnings — should review              */
+  --ads-attention-text:   #F5C46B;
+  --ads-attention-tint:   rgba(245, 165, 36, 0.12);
+  --ads-attention-border: rgba(245, 165, 36, 0.40);
+
+  --ads-ok:              #34C759; /* Passed checks, advisory                */
+  --ads-ok-text:         #7BE096;
+  --ads-ok-tint:         rgba(52, 199, 89, 0.12);
+  --ads-ok-border:       rgba(52, 199, 89, 0.40);
+
+  /* ---- Layer classification palette (cool, desaturated) ---------------- */
+  --ads-class-logo:      #7C9CFF;
+  --ads-class-headline:  #B79CFF;
+  --ads-class-copy:      #6FC3D6;
+  --ads-class-image:     #4FBFA8;
+  --ads-class-cta:       #FF8FB0;
+  --ads-class-bg:        #7A8494;
+  --ads-class-decor:     #8892A3;
+
+  /* ---- Typography ------------------------------------------------------- */
+  --ads-font-display: var(--font-display, "Space Grotesk"), system-ui, sans-serif;
+  --ads-font-mono:    var(--font-mono, "Alumni Sans Pinstripe"), ui-monospace, monospace;
+
+  --ads-text-display: 700 3.25rem/0.98 var(--ads-font-display);  /* -0.03em */
+  --ads-text-h1:      800 1.875rem/1.05 var(--ads-font-display); /* -0.02em */
+  --ads-text-h2:      700 1.125rem/1.3  var(--ads-font-display);
+  --ads-text-body:    400 0.875rem/1.6  var(--ads-font-display);
+  --ads-text-small:   400 0.8125rem/1.5 var(--ads-font-display);
+  --ads-text-mono:    500 0.75rem/1.4   var(--ads-font-mono);
+
+  --ads-tracking-display: -0.03em;
+  --ads-tracking-tight:   -0.02em;
+  --ads-tracking-mono:     0.10em; /* uppercase spec labels */
+
+  /* ---- Spacing scale (4px base) ---------------------------------------- */
+  --ads-space-1:  4px;
+  --ads-space-2:  8px;
+  --ads-space-3:  12px;
+  --ads-space-4:  16px;
+  --ads-space-5:  20px;
+  --ads-space-6:  24px;
+  --ads-space-8:  32px;
+  --ads-space-10: 40px;
+  --ads-space-14: 56px;
+
+  /* ---- Radius ----------------------------------------------------------- */
+  --ads-radius-sm:  6px;
+  --ads-radius-md:  8px;
+  --ads-radius-lg:  12px;
+  --ads-radius-xl:  14px;
+  --ads-radius-pill: 999px;
+
+  /* ---- Elevation -------------------------------------------------------- */
+  --ads-shadow-panel:  0 30px 80px -40px rgba(0, 0, 0, 0.80);
+  --ads-shadow-glow:   0 0 30px -10px var(--ads-signal-border);
 }
 
 @layer base {

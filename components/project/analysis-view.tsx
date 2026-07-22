@@ -94,10 +94,16 @@ export function AnalysisView({
       )}
 
       {isCompleted && data.formats.length > 0 && (
-        <div className="flex flex-wrap gap-3 text-sm text-muted-foreground">
-          <span>🟢 {data.summary.ready} listos</span>
-          <span>🟡 {data.summary.warning} con avisos</span>
-          <span>🔴 {data.summary.blocked} bloqueados</span>
+        <div className="flex flex-wrap gap-2 text-sm">
+          <span className="rounded-md border border-[rgba(52,199,89,0.40)] bg-[rgba(52,199,89,0.12)] px-2 py-1 text-[#7BE096]">
+            🟢 {data.summary.ready} listos
+          </span>
+          <span className="rounded-md border border-[rgba(245,165,36,0.40)] bg-[rgba(245,165,36,0.12)] px-2 py-1 text-[#F5C46B]">
+            🟡 {data.summary.warning} con avisos
+          </span>
+          <span className="rounded-md border border-[rgba(240,68,68,0.40)] bg-[rgba(240,68,68,0.12)] px-2 py-1 text-[#FF8A8A]">
+            🔴 {data.summary.blocked} bloqueados
+          </span>
         </div>
       )}
 

@@ -45,9 +45,11 @@ export function RegisterForm() {
     setRegistered(true);
   }
 
+  const inputClassName = "bg-[#070A0F] border-[#2E3644] focus-visible:border-[#2E80FF]";
+
   if (registered) {
     return (
-      <Card>
+      <Card className="border-[#232935] bg-[#12161F]">
         <CardContent className="pt-6 text-center text-sm">
           Revisa tu email para confirmar la cuenta.
         </CardContent>
@@ -56,7 +58,7 @@ export function RegisterForm() {
   }
 
   return (
-    <Card>
+    <Card className="border-[#232935] bg-[#12161F]">
       <CardContent className="pt-6">
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
           <div className="flex flex-col gap-1.5">
@@ -68,6 +70,7 @@ export function RegisterForm() {
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
+              className={inputClassName}
             />
           </div>
           <div className="flex flex-col gap-1.5">
@@ -80,6 +83,7 @@ export function RegisterForm() {
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
+              className={inputClassName}
             />
           </div>
           <div className="flex flex-col gap-1.5">
@@ -92,6 +96,7 @@ export function RegisterForm() {
               required
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
+              className={inputClassName}
             />
           </div>
 

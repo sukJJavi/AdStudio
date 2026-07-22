@@ -23,20 +23,21 @@ const CLASSIFICATION_LABELS: Record<LayerClassification, string> = {
   desconocido: "Desconocido",
 };
 
-// Colores pedidos para el editor de capas; "disclaimer" no viene en ese listado
-// (viene del vocabulario cerrado de .claude/skills/psd-analysis.md) así que se
-// le asigna un color propio para no dejarlo sin badge.
+// Colores de clasificación del design system (--ads-class-* en
+// designsystem/adstudio-tokens.css); "subclaim"/"disclaimer" no vienen en ese
+// listado (vocabulario cerrado de .claude/skills/psd-analysis.md) así que
+// reutilizan el tono de la clasificación más cercana (headline / bg).
 const CLASSIFICATION_COLORS: Record<LayerClassification, string> = {
-  fondo: "bg-gray-200 text-gray-800",
-  imagen_principal: "bg-blue-200 text-blue-800",
-  logo: "bg-green-200 text-green-800",
-  claim: "bg-yellow-200 text-yellow-800",
-  subclaim: "bg-orange-200 text-orange-800",
-  cta: "bg-red-200 text-red-800",
-  disclaimer: "bg-slate-200 text-slate-800",
-  decorativo: "bg-purple-200 text-purple-800",
-  texto: "bg-cyan-200 text-cyan-800",
-  desconocido: "bg-red-950 text-red-100",
+  fondo: "bg-[#7A8494]/15 text-[#7A8494] border border-[#7A8494]/40",
+  imagen_principal: "bg-[#4FBFA8]/15 text-[#4FBFA8] border border-[#4FBFA8]/40",
+  logo: "bg-[#7C9CFF]/15 text-[#7C9CFF] border border-[#7C9CFF]/40",
+  claim: "bg-[#B79CFF]/15 text-[#B79CFF] border border-[#B79CFF]/40",
+  subclaim: "bg-[#B79CFF]/15 text-[#B79CFF] border border-[#B79CFF]/40",
+  cta: "bg-[#FF8FB0]/15 text-[#FF8FB0] border border-[#FF8FB0]/40",
+  disclaimer: "bg-[#7A8494]/15 text-[#7A8494] border border-[#7A8494]/40",
+  decorativo: "bg-[#8892A3]/15 text-[#8892A3] border border-[#8892A3]/40",
+  texto: "bg-[#6FC3D6]/15 text-[#6FC3D6] border border-[#6FC3D6]/40",
+  desconocido: "bg-[#F04444]/15 text-[#F04444] border border-[#F04444]/40",
 };
 
 function needsFrameFor(layer: Pick<ProjectLayer, "frames" | "persistent">): boolean {
@@ -218,7 +219,7 @@ export function LayersEditor({
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold">Capas ({visible.length})</h2>
           {unassigned.length > 0 && (
-            <span className="text-xs text-amber-700">{unassigned.length} sin frame</span>
+            <span className="text-xs text-[#F5C46B]">{unassigned.length} sin frame</span>
           )}
         </div>
 
@@ -239,8 +240,8 @@ export function LayersEditor({
                   onDragOver={(e) => e.preventDefault()}
                   onDrop={() => handleDrop(layer.id)}
                   className={cn(
-                    "flex gap-3 rounded-md border border-border p-2 transition-all",
-                    needsFrame && "border-amber-300 bg-amber-50",
+                    "flex gap-3 rounded-md border border-[#232935] bg-[#12161F] p-2 transition-all hover:bg-[#171C27]",
+                    needsFrame && "border-[rgba(245,165,36,0.40)] bg-[rgba(245,165,36,0.12)]",
                     removing.has(layer.id) && "opacity-0 scale-95",
                   )}
                 >
@@ -325,7 +326,7 @@ export function LayersEditor({
                     <div
                       className={cn(
                         "flex flex-wrap gap-x-3 gap-y-1 rounded-md border border-input px-1.5 py-1 text-xs",
-                        needsFrame && "border-amber-400",
+                        needsFrame && "border-[rgba(245,165,36,0.40)]",
                       )}
                     >
                       <label className="flex items-center gap-1">
@@ -359,7 +360,7 @@ export function LayersEditor({
                     )}
 
                     {needsFrame && (
-                      <span className="text-[10px] font-medium text-amber-700">⚠ Sin frame asignado</span>
+                      <span className="text-[10px] font-medium text-[#F5C46B]">⚠ Sin frame asignado</span>
                     )}
                   </div>
                 </li>
@@ -415,13 +416,13 @@ export function LayersEditor({
           ))}
         </div>
 
-        <div className="max-w-full overflow-auto rounded-lg border border-border">
+        <div className="max-w-full overflow-auto rounded-lg border border-[#232935] bg-[#070A0F]">
           <div
             style={{
               position: "relative",
               width: canvasWidth,
               height: canvasHeight,
-              background: "#000",
+              background: "#070A0F",
               overflow: "hidden",
             }}
           >
