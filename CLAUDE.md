@@ -35,7 +35,7 @@ adaptaciones por formato, animación y exportación.
     /brief            → CRUD brief
     /upload           → recibe archivos → Supabase Storage
     /analysis         → lanza Trigger.dev job de análisis
-    /layers           → GET/[projectId] lista capas, PATCH/[assetId] edita una, POST/[projectId]/reorder batch z_index
+    /layers           → GET/project/[projectId] lista capas, PATCH/asset/[assetId] edita una, POST/project/[projectId]/reorder batch z_index
     /master           → generate, status/[projectId], approve-link → lanza render-master.ts
     /master/approve, /master/request-changes → aprobación pública del master (sin sesión)
     /production       → start, status/[projectId] → lanza render-adaptations.ts

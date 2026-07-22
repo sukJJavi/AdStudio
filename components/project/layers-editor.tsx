@@ -46,7 +46,7 @@ function frameSelectValue(layer: Pick<ProjectLayer, "frame" | "persistent">): st
 }
 
 async function patchLayer(id: string, body: Record<string, unknown>) {
-  const res = await fetch(`/api/layers/${id}`, {
+  const res = await fetch(`/api/layers/asset/${id}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -127,7 +127,7 @@ export function LayersEditor({
     });
     setDraggedId(null);
 
-    fetch(`/api/layers/${projectId}/reorder`, {
+    fetch(`/api/layers/project/${projectId}/reorder`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ order: reindexed.map((l) => ({ id: l.id, z_index: l.z_index })) }),
