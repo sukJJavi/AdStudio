@@ -192,6 +192,12 @@ export const analyzePsd = task({
             : null;
         const hidden = layer.hidden === true;
 
+        console.log("Intentando insertar capa:", {
+          name: layer.name,
+          classification: "pending",
+          project_id: payload.projectId,
+        });
+
         const { data: inserted, error: insertError } = await supabase
           .from("adstudio_assets")
           .insert({
@@ -218,6 +224,13 @@ export const analyzePsd = task({
           })
           .select()
           .single();
+
+        console.log("Resultado insert:", { data: inserted, error: insertError });
+
+        if (insertError) {
+          console.error("Error insertando capa:", insertError);
+          throw new Error(`Insert failed: ${insertError.message}`);
+        }
 
         if (!insertError && inserted) {
           layersExtracted += 1;
