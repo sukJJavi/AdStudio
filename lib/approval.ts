@@ -6,6 +6,8 @@ import { sendChangesRequestedEmail, sendMasterReadyEmail } from "@/lib/email/mas
 
 const APPROVAL_TOKEN_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MASTER_PREVIEW_SIGNED_URL_TTL_SECONDS = 60 * 60 * 24 * 7;
+/** Preview del HTML5 en iframe — mismo TTL que el resto del preview público del token. */
+const HTML5_SIGNED_URL_TTL_SECONDS = MASTER_PREVIEW_SIGNED_URL_TTL_SECONDS;
 
 /**
  * Genera el link público de aprobación y envía el email al usuario autenticado
@@ -82,6 +84,9 @@ export type ApprovalContext =
       cliente: string;
       producto: string | null;
       masterJpgUrl: string | null;
+      html5Url: string | null;
+      width: number | null;
+      height: number | null;
     };
 
 /** Lectura pública (sin sesión) del estado de un token de aprobación. Usa service-role. */
@@ -110,7 +115,7 @@ export async function getApprovalContext(token: string): Promise<ApprovalContext
 
   const { data: masterRow } = await supabase
     .from("adstudio_masters")
-    .select("jpg_path")
+    .select("jpg_path, width, height")
     .eq("project_id", tokenRow.project_id)
     .eq("is_primary", true)
     .order("created_at", { ascending: false })
@@ -125,11 +130,27 @@ export async function getApprovalContext(token: string): Promise<ApprovalContext
     masterJpgUrl = signed?.signedUrl ?? null;
   }
 
+  // HTML5 del master (ruta estable subida por trigger/render-master.ts), para el
+  // iframe de app/approve/[token] — igual que en el preview del master interno.
+  let html5Url: string | null = null;
+  const { data: masterFolderList } = await supabase.storage
+    .from("adstudio-projects")
+    .list(`${tokenRow.project_id}/master`);
+  if (masterFolderList?.some((f) => f.name === "index.html")) {
+    const { data: signed } = await supabase.storage
+      .from("adstudio-projects")
+      .createSignedUrl(`${tokenRow.project_id}/master/index.html`, HTML5_SIGNED_URL_TTL_SECONDS);
+    html5Url = signed?.signedUrl ?? null;
+  }
+
   return {
     state: tokenRow.approved_at ? "approved" : "pending",
     cliente: project.cliente,
     producto: project.producto,
     masterJpgUrl,
+    html5Url,
+    width: masterRow?.width ?? null,
+    height: masterRow?.height ?? null,
   };
 }
 

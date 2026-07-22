@@ -366,6 +366,26 @@ export const analyzePsd = task({
       const contentType = isBackgroundLayer ? "image/jpeg" : "image/png";
 
       const storagePath = `${payload.projectId}/layers/${filename}`;
+
+      // Fix 2: si el job se disparó dos veces (p. ej. una condición de carrera en
+      // triggerAnalysis), la segunda ejecución recalcula el mismo storagePath para
+      // la misma capa — antes de subir/clasificar, comprueba si YA existe otro
+      // asset del proyecto con ese file_path y, si es así, descarta este duplicado
+      // en vez de crear una capa visible repetida.
+      const { data: duplicateAsset } = await supabase
+        .from("adstudio_assets")
+        .select("id")
+        .eq("project_id", payload.projectId)
+        .eq("file_path", storagePath)
+        .neq("id", assetId)
+        .maybeSingle();
+
+      if (duplicateAsset) {
+        console.log("Capa duplicada detectada, descartando:", { assetId, storagePath, duplicateAsset });
+        await supabase.from("adstudio_assets").update({ discarded: true, status: "processed" }).eq("id", assetId);
+        continue;
+      }
+
       const { error: uploadError } = await supabase.storage
         .from("adstudio-projects")
         .upload(storagePath, exportBuffer, { contentType, upsert: true });

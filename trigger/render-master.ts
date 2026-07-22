@@ -4,7 +4,7 @@ import { getIABFormatById, type IABFormat } from "@/lib/iab/specs";
 import { fontFamilyStack } from "@/lib/fonts";
 import { splitCopy } from "@/lib/render/copy";
 import { pickLargestBy, selectClassifiedAssets, downloadAsset } from "@/lib/render/assets";
-import { loadGoogleFont } from "@/lib/render/font-loader";
+import { loadGoogleFontWithFallback } from "@/lib/render/font-loader";
 import { renderBannerToPng } from "@/lib/render/jpg-renderer";
 import { renderFallbackFromFrame } from "@/lib/render/fallback-composite";
 import { generateHtml5Master } from "@/lib/render/html5-generator";
@@ -78,8 +78,10 @@ export const renderMaster = task({
       downloadAsset(supabase, fondoAsset?.file_path ?? null),
       downloadAsset(supabase, imagenPrincipalAsset?.file_path ?? null),
       downloadAsset(supabase, logoAsset?.file_path ?? null),
-      loadGoogleFont(fontPrimary, 400),
-      loadGoogleFont(fontPrimary, 700),
+      // Fix 3: nunca bloquea el render — si la tipografía detectada del PSD no
+      // existe en Google Fonts, cae a Inter (ver lib/render/font-loader.ts).
+      loadGoogleFontWithFallback(fontPrimary, 400),
+      loadGoogleFontWithFallback(fontPrimary, 700),
     ]);
 
     const logoAspectRatio =
@@ -164,6 +166,10 @@ export const renderMaster = task({
 
     const basePath = `${payload.projectId}/master/${format.iab_format}`;
     const masterFolder = `${payload.projectId}/master`;
+    // Fix 5: sube el HTML como Buffer con contentType explícito — algunos backends
+    // de Storage no infieren bien el Content-Type de un string plano y el iframe
+    // del preview termina descargando/mostrando el código fuente en vez de renderizarlo.
+    const htmlBuffer = Buffer.from(html, "utf-8");
 
     await Promise.all([
       supabase.storage
@@ -174,13 +180,13 @@ export const renderMaster = task({
         .upload(`${basePath}.png`, pngBuffer, { contentType: "image/png", upsert: true }),
       supabase.storage
         .from("adstudio-projects")
-        .upload(`${basePath}.html`, html, { contentType: "text/html", upsert: true }),
+        .upload(`${basePath}.html`, htmlBuffer, { contentType: "text/html", upsert: true }),
       // Ruta estable (independiente del iab_format elegido como master) para el
       // preview en iframe de app/project/[id]/master — junto a las mismas capas
       // PNG/JPG que referencia por filename relativo, para que cargue sin roturas.
       supabase.storage
         .from("adstudio-projects")
-        .upload(`${masterFolder}/index.html`, html, { contentType: "text/html", upsert: true }),
+        .upload(`${masterFolder}/index.html`, htmlBuffer, { contentType: "text/html", upsert: true }),
       ...pngEntries.map((entry) =>
         supabase.storage
           .from("adstudio-projects")

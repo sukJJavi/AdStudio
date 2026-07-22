@@ -37,3 +37,23 @@ export async function loadGoogleFont(family: string, weight: 400 | 700 = 400): P
 
   return Buffer.from(await fontResponse.arrayBuffer());
 }
+
+const FALLBACK_FONT = "Inter";
+
+/**
+ * Igual que `loadGoogleFont`, pero nunca bloquea el render: la tipografía
+ * detectada en el PSD puede no existir en Google Fonts (o no coincidir
+ * exactamente con su nombre real), y eso no debe tirar abajo el job — las
+ * capas de texto se exportan como PNG (ver trigger/analyze-psd.ts), así que
+ * la tipografía real del PSD no afecta al render del fallback.jpg/png; el
+ * único uso de esta fuente es el claim/subclaim/CTA que compone Satori.
+ */
+export async function loadGoogleFontWithFallback(family: string, weight: 400 | 700 = 400): Promise<Buffer> {
+  try {
+    return await loadGoogleFont(family, weight);
+  } catch (error) {
+    console.error(`No se pudo cargar la fuente "${family}" (peso ${weight}), usando fallback Inter:`, error);
+    if (family === FALLBACK_FONT) throw error;
+    return loadGoogleFont(FALLBACK_FONT, weight);
+  }
+}

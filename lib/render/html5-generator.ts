@@ -11,6 +11,7 @@ Recibes la estructura de capas de un banner publicitario y generas el HTML5 de p
 REGLAS DE PRODUCCIÓN:
 - Cada asset es un PNG del tamaño exacto del canvas posicionado con position:absolute, top:0, left:0, width:100%, height:100%
 - El fondo del #ad es siempre negro (#000)
+- El #ad lleva siempre border: 1px solid #000000; y box-sizing: border-box; en su CSS
 - Siempre incluye clickTag como variable JS global
 - La capa de clickthrough es un div transparente position:absolute que cubre el 100% del ad, z-index máximo, con onclick='window.open(window.clickTag)'
 - La animación se infiere del orden de frames y nombres de capas. Si hay guía de animación, úsala.
@@ -20,6 +21,13 @@ REGLAS DE PRODUCCIÓN:
 - Incluye función loopea() para el loop automático
 - Assets referenciados por filename, nunca en base64
 - Compatible con Google Display Network, Xandr, The Trade Desk
+- Los PNG con canal alpha (logos, textos, elementos decorativos) NUNCA llevan background-color ni background en su CSS. Solo las capas clasificadas como 'fondo' o 'background' pueden tener color de fondo.
+- Las capas de background que son más anchas que el canvas (como imágenes panorámicas de 1250px en un canvas de 300px) deben tener overflow:visible en el #ad y la animación de desplazamiento debe modificar la propiedad left/transform. El #ad debe tener overflow:hidden para contener todo.
+
+Ejemplo de background panorámico que se desplaza:
+#ad { overflow: hidden; }
+#background { position:absolute; width:1250px; left:-475px; transition: left 0.8s ease; }
+Para ir al frame 2: background.style.left = '-775px'
 
 FORMATO DE RESPUESTA:
 Devuelve SOLO el HTML completo, sin explicaciones, sin bloques de código markdown, comenzando con <!doctype html>`;
@@ -72,6 +80,20 @@ function stripCodeFence(text: string): string {
 }
 
 /**
+ * Fix 9: garantiza el borde del #ad aunque Claude no lo incluya (el prompt lo
+ * pide, pero no hay forma de asegurar el cumplimiento de un LLM) — añade
+ * `border`/`box-sizing` a la regla `#ad { ... }` solo si no están ya presentes.
+ */
+function ensureAdBorder(html: string): string {
+  return html.replace(/(#ad\s*\{)([^}]*)(\})/i, (_match, open: string, body: string, close: string) => {
+    let updatedBody = body;
+    if (!/border\s*:/i.test(updatedBody)) updatedBody += " border: 1px solid #000000;";
+    if (!/box-sizing\s*:/i.test(updatedBody)) updatedBody += " box-sizing: border-box;";
+    return `${open}${updatedBody}${close}`;
+  });
+}
+
+/**
  * Genera el HTML5 de producción de un banner llamando a Claude UNA SOLA VEZ por
  * proyecto (el master). Las adaptaciones a otros formatos reutilizan este mismo
  * HTML vía `adaptHtml5ToFormat`, sin volver a llamar a Claude — ver
@@ -112,7 +134,9 @@ export async function generateHtml5Master(
   const textBlock = response.content.find((block) => block.type === "text");
   const raw = textBlock && textBlock.type === "text" ? textBlock.text : "";
 
-  return { html: stripCodeFence(raw), assetFilenames: descriptors.map((d) => d.filename) };
+  const html = ensureAdBorder(stripCodeFence(raw));
+
+  return { html, assetFilenames: descriptors.map((d) => d.filename) };
 }
 
 /**

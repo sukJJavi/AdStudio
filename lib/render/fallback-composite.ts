@@ -37,6 +37,8 @@ export async function renderFallbackFromFrame(params: {
     )
     .sort((a, b) => (a.z_index ?? 0) - (b.z_index ?? 0));
 
+  console.log("CTA frame:", targetFrame, "Capas en fallback:", layers.map((l) => l.layer_name));
+
   const layerBuffers = await Promise.all(
     layers.map(async (layer) => ({ layer, buffer: await downloadAsset(supabase, layer.file_path) })),
   );

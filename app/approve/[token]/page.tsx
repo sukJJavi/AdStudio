@@ -34,11 +34,23 @@ export default async function ApprovePage({
         </h1>
       </div>
 
-      {context.masterJpgUrl && (
+      {context.html5Url ? (
         <div className="overflow-auto rounded-lg border border-border">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={context.masterJpgUrl} alt="Master" className="block w-full" />
+          <iframe
+            src={context.html5Url}
+            width={context.width ?? undefined}
+            height={context.height ?? undefined}
+            style={{ display: "block", border: "none", borderRadius: 0, margin: 0, padding: 0 }}
+            title="Preview del master (HTML5)"
+          />
         </div>
+      ) : (
+        context.masterJpgUrl && (
+          <div className="overflow-auto rounded-lg border border-border">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={context.masterJpgUrl} alt="Master" className="block w-full" />
+          </div>
+        )
       )}
 
       {context.state === "approved" ? (
