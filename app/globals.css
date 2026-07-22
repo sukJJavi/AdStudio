@@ -47,6 +47,7 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
+  --color-select-trigger-bg: var(--select-trigger-bg);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -86,6 +87,15 @@
 
   --popover:             hsl(222 26% 12%);   /* #171C27 surface-raised */
   --popover-foreground:  hsl(222 24% 92%);
+
+  /*
+   * `--card` above is already a full `hsl(...)` value in this codebase (not
+   * bare channels like stock shadcn), so this is NOT re-wrapped in hsl() —
+   * `hsl(var(--card))` would double-wrap into an invalid color and fall back
+   * to a browser default (white), which is the exact "invisible text on
+   * white popover" bug this token exists to prevent.
+   */
+  --select-trigger-bg:   var(--card);         /* #12161F */
 
   /* Primary — Signal Blue */
   --primary:             hsl(217 100% 59%);  /* #2E80FF                */
