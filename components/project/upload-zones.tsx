@@ -2,6 +2,7 @@
 
 import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -34,6 +35,14 @@ async function uploadAsset(
   const data = await res.json();
 
   if (!res.ok) return { ok: false, error: data.error ?? "Error al subir el archivo." };
+  return { ok: true };
+}
+
+async function deleteAsset(assetId: string): Promise<{ ok: true } | { ok: false; error: string }> {
+  const res = await fetch(`/api/upload/${assetId}`, { method: "DELETE" });
+  const data = await res.json();
+
+  if (!res.ok) return { ok: false, error: data.error ?? "No se pudo eliminar el archivo." };
   return { ok: true };
 }
 
@@ -150,7 +159,32 @@ export function UploadZones({
   const [analizando, setAnalizando] = useState(false);
   const [analizarError, setAnalizarError] = useState<string | null>(null);
 
+  const [removingIds, setRemovingIds] = useState<Set<string>>(new Set());
+  const [deleteErrors, setDeleteErrors] = useState<Record<string, string>>({});
+
   const puedeAnalizar = psdAssets.length > 0 && excelAssets.length > 0;
+
+  async function handleDelete(assetId: string) {
+    setDeleteErrors((prev) => {
+      const rest = { ...prev };
+      delete rest[assetId];
+      return rest;
+    });
+    setRemovingIds((prev) => new Set(prev).add(assetId));
+
+    const result = await deleteAsset(assetId);
+    if (result.ok) {
+      // Deja que la animación de salida termine antes de refrescar los datos del servidor.
+      setTimeout(() => router.refresh(), 200);
+    } else {
+      setRemovingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(assetId);
+        return next;
+      });
+      setDeleteErrors((prev) => ({ ...prev, [assetId]: result.error }));
+    }
+  }
 
   async function handlePsdFiles(files: File[]) {
     const slotsLeft = 2 - (psdAssets.length + pendingPsd.length);
@@ -324,7 +358,12 @@ export function UploadZones({
           />
           <ul className="flex flex-col gap-2">
             {psdAssets.map((asset) => (
-              <li key={asset.id} className="flex items-center gap-3 rounded-md border border-border p-2 text-sm">
+              <li
+                key={asset.id}
+                className={`flex items-center gap-3 rounded-md border border-border p-2 text-sm transition-all duration-200 ${
+                  removingIds.has(asset.id) ? "-translate-x-2 opacity-0" : "opacity-100"
+                }`}
+              >
                 {psdThumbnails[asset.layer_name ?? ""] ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
@@ -338,7 +377,20 @@ export function UploadZones({
                   </span>
                 )}
                 <span className="flex-1 truncate">{asset.layer_name}</span>
-                <span className="text-xs text-green-600">subido</span>
+                {deleteErrors[asset.id] ? (
+                  <span className="text-xs text-red-600">{deleteErrors[asset.id]}</span>
+                ) : (
+                  <span className="text-xs text-green-600">subido</span>
+                )}
+                <button
+                  type="button"
+                  aria-label="Eliminar archivo"
+                  disabled={removingIds.has(asset.id)}
+                  onClick={() => handleDelete(asset.id)}
+                  className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-red-600 disabled:opacity-50"
+                >
+                  <X className="h-4 w-4" />
+                </button>
               </li>
             ))}
             {pendingPsd.map((p) => (
@@ -370,12 +422,30 @@ export function UploadZones({
           />
           <ul className="flex flex-col gap-2">
             {excelAssets.map((asset) => (
-              <li key={asset.id} className="flex items-center gap-3 rounded-md border border-border p-2 text-sm">
+              <li
+                key={asset.id}
+                className={`flex items-center gap-3 rounded-md border border-border p-2 text-sm transition-all duration-200 ${
+                  removingIds.has(asset.id) ? "-translate-x-2 opacity-0" : "opacity-100"
+                }`}
+              >
                 <span className="flex h-10 w-10 items-center justify-center rounded bg-muted text-xs">
                   XLS
                 </span>
                 <span className="flex-1 truncate">{asset.layer_name}</span>
-                <span className="text-xs text-green-600">subido</span>
+                {deleteErrors[asset.id] ? (
+                  <span className="text-xs text-red-600">{deleteErrors[asset.id]}</span>
+                ) : (
+                  <span className="text-xs text-green-600">subido</span>
+                )}
+                <button
+                  type="button"
+                  aria-label="Eliminar archivo"
+                  disabled={removingIds.has(asset.id)}
+                  onClick={() => handleDelete(asset.id)}
+                  className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-red-600 disabled:opacity-50"
+                >
+                  <X className="h-4 w-4" />
+                </button>
               </li>
             ))}
             {pendingExcel.map((p) => (
@@ -456,12 +526,30 @@ export function UploadZones({
 
           <ul className="flex flex-col gap-2">
             {animationAssets.map((asset) => (
-              <li key={asset.id} className="flex items-center gap-3 rounded-md border border-border p-2 text-sm">
+              <li
+                key={asset.id}
+                className={`flex items-center gap-3 rounded-md border border-border p-2 text-sm transition-all duration-200 ${
+                  removingIds.has(asset.id) ? "-translate-x-2 opacity-0" : "opacity-100"
+                }`}
+              >
                 <span className="flex h-10 w-10 items-center justify-center rounded bg-muted text-xs">
                   DOC
                 </span>
                 <span className="flex-1 truncate">{asset.layer_name}</span>
-                <span className="text-xs text-green-600">subido</span>
+                {deleteErrors[asset.id] ? (
+                  <span className="text-xs text-red-600">{deleteErrors[asset.id]}</span>
+                ) : (
+                  <span className="text-xs text-green-600">subido</span>
+                )}
+                <button
+                  type="button"
+                  aria-label="Eliminar archivo"
+                  disabled={removingIds.has(asset.id)}
+                  onClick={() => handleDelete(asset.id)}
+                  className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-red-600 disabled:opacity-50"
+                >
+                  <X className="h-4 w-4" />
+                </button>
               </li>
             ))}
             {pendingAnimation.map((p) => (

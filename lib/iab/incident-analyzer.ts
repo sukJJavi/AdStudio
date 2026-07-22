@@ -76,27 +76,30 @@ function buildIncidenciasForFormat(
   format: ProjectFormat,
   psdLayers: ProjectAsset[],
   hasAnimationGuide: boolean,
+  hasNoUsableLayers: boolean,
+  hasParseError: boolean,
 ): Incidencia[] {
   const incidencias: Incidencia[] = [];
   const spec = getIABFormatById(format.iab_format);
   const hasImagenPrincipal = psdLayers.some((a) => a.classification === "imagen_principal");
 
   // 🔴 CRÍTICO
+  // Única razón para bloquear un formato: no hay nada renderizable en el PSD.
 
-  if (!hasImagenPrincipal) {
+  if (hasParseError) {
     incidencias.push({
       level: "critico",
-      code: "MISSING_MAIN_IMAGE",
-      message: "No se detectó ninguna capa clasificada como imagen principal en el PSD.",
+      code: "PSD_PARSE_ERROR",
+      message: "No se pudo leer el PSD: el archivo está dañado o usa un formato no soportado.",
       format_id: format.id,
     });
   }
 
-  if (!format.copy || !format.copy.trim()) {
+  if (hasNoUsableLayers) {
     incidencias.push({
       level: "critico",
-      code: "MISSING_COPY",
-      message: `El formato "${format.nombre_soporte}" no tiene copy asignado.`,
+      code: "NO_USABLE_LAYERS",
+      message: "El PSD no tiene ninguna capa utilizable (todas descartadas o vacío).",
       format_id: format.id,
     });
   }
@@ -115,6 +118,25 @@ function buildIncidenciasForFormat(
   }
 
   // 🟡 ATENCIÓN
+
+  if (!hasImagenPrincipal) {
+    incidencias.push({
+      level: "atencion",
+      code: "MISSING_MAIN_IMAGE",
+      message:
+        "No se detectó ninguna capa clasificada como imagen principal en el PSD. Puede asignarse manualmente en el editor de capas.",
+      format_id: format.id,
+    });
+  }
+
+  if (!format.copy || !format.copy.trim()) {
+    incidencias.push({
+      level: "atencion",
+      code: "MISSING_COPY",
+      message: `El formato "${format.nombre_soporte}" no tiene copy asignado. Puede asignarse desde las capas de texto detectadas en el editor de capas.`,
+      format_id: format.id,
+    });
+  }
 
   for (const asset of psdLayers) {
     if (
@@ -204,10 +226,18 @@ export async function analyzeProjectIncidents(
   const allAssets = (assets ?? []) as ProjectAsset[];
   const psdLayers = allAssets.filter((a) => a.layer_type != null && PSD_LAYER_TYPES.has(a.layer_type));
   const hasAnimationGuide = allAssets.some((a) => a.layer_type === "animation");
+  const hasNoUsableLayers = psdLayers.filter((a) => !a.discarded).length === 0;
+  const hasParseError = allAssets.some((a) => a.layer_type === "psd" && a.status === "error");
 
   await Promise.all(
     (formats as ProjectFormat[]).map((format) => {
-      const incidencias = buildIncidenciasForFormat(format, psdLayers, hasAnimationGuide);
+      const incidencias = buildIncidenciasForFormat(
+        format,
+        psdLayers,
+        hasAnimationGuide,
+        hasNoUsableLayers,
+        hasParseError,
+      );
       return supabase.from("adstudio_formats").update({ incidencias }).eq("id", format.id);
     }),
   );

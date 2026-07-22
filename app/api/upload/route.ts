@@ -131,10 +131,21 @@ export async function POST(req: NextRequest) {
   console.log("¿Hay PSD?", hasPsd);
   console.log("¿Hay Excel?", hasExcel);
 
+  // Misma query que el rate limiting de triggerAnalysis (lib/analysis.ts): si dos
+  // uploads (PSD y Excel) llegan por separado y el análisis ya está en curso,
+  // evita lanzar un segundo job.
+  const { data: projectStatusRow } = await supabase
+    .from("adstudio_projects")
+    .select("status")
+    .eq("id", projectId)
+    .single();
+
+  const alreadyAnalyzing = projectStatusRow?.status === "analyzing";
+
   let analysisTriggered = false;
   let analysisError: string | null = null;
 
-  if (hasPsd && hasExcel) {
+  if (hasPsd && hasExcel && !alreadyAnalyzing) {
     console.log("Disparando análisis...");
     try {
       const result = await triggerAnalysis(projectId);

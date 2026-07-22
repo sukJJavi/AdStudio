@@ -137,12 +137,19 @@ export const analyzePsd = task({
       metadata.set("progress", 0.2);
 
       const buffer = Buffer.from(await file.arrayBuffer());
-      const psd = readPsd(buffer, {
-        skipCompositeImageData: true,
-        skipThumbnail: true,
-        useImageData: true,
-        throwForMissingFeatures: false,
-      });
+      let psd: ReturnType<typeof readPsd>;
+      try {
+        psd = readPsd(buffer, {
+          skipCompositeImageData: true,
+          skipThumbnail: true,
+          useImageData: true,
+          throwForMissingFeatures: false,
+        });
+      } catch (error) {
+        console.error(`No se pudo leer el PSD ${psdAsset.file_path}:`, error);
+        await supabase.from("adstudio_assets").update({ status: "error" }).eq("id", psdAsset.id);
+        continue;
+      }
 
       const dpi = psd.imageResources?.resolutionInfo?.horizontalResolution ?? null;
 
