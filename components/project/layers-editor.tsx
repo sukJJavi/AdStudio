@@ -39,10 +39,8 @@ const CLASSIFICATION_COLORS: Record<LayerClassification, string> = {
   desconocido: "bg-red-950 text-red-100",
 };
 
-function frameSelectValue(layer: Pick<ProjectLayer, "frame" | "persistent">): string {
-  if (layer.persistent) return "persistent";
-  if (layer.frame != null) return String(layer.frame);
-  return "";
+function needsFrameFor(layer: Pick<ProjectLayer, "frames" | "persistent">): boolean {
+  return !layer.persistent && (layer.frames ?? []).length === 0;
 }
 
 async function patchLayer(id: string, body: Record<string, unknown>) {
@@ -83,6 +81,21 @@ export function LayersEditor({
   function updateLayer(id: string, patch: Partial<ProjectLayer>) {
     setLayers((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)));
     setDirty((prev) => new Set(prev).add(id));
+  }
+
+  function toggleFrame(layer: ProjectLayer, frameValue: number) {
+    const current = layer.frames ?? [];
+    const nextFrames = current.includes(frameValue)
+      ? current.filter((f) => f !== frameValue)
+      : [...current, frameValue].sort((a, b) => a - b);
+    // Marcar cualquier frame desmarca "Persistente" (mutuamente excluyentes).
+    updateLayer(layer.id, { frames: nextFrames, persistent: false });
+  }
+
+  function togglePersistent(layer: ProjectLayer) {
+    const next = !layer.persistent;
+    // Marcar "Persistente" desmarca todos los frames (mutuamente excluyentes).
+    updateLayer(layer.id, { persistent: next, frames: next ? [] : layer.frames });
   }
 
   async function handleDiscard(id: string) {
@@ -148,7 +161,7 @@ export function LayersEditor({
           if (!layer) return Promise.resolve({ ok: true, error: undefined });
           return patchLayer(id, {
             classification: layer.classification,
-            frame: layer.frame,
+            frames: layer.frames ?? [],
             persistent: layer.persistent,
             text_content: layer.text_content,
             z_index: layer.z_index,
@@ -186,31 +199,14 @@ export function LayersEditor({
   }
 
   const visible = sorted.filter((l) => !l.discarded);
-  const unassigned = visible.filter((l) => l.frame == null && !l.persistent);
-  const usedFrames = Array.from(
-    new Set(visible.map((l) => l.frame).filter((f): f is number => f != null)),
-  ).sort((a, b) => a - b);
+  const unassigned = visible.filter((l) => needsFrameFor(l));
+  const usedFrames = Array.from(new Set(visible.flatMap((l) => l.frames ?? []))).sort((a, b) => a - b);
 
   const canContinue = unassigned.length === 0 && visible.length > 0 && !hasCriticalIncidents;
 
   const previewLayers = visible.filter((l) =>
-    previewFrame === "all" ? true : l.frame === previewFrame || l.persistent,
+    previewFrame === "all" ? true : l.persistent || (l.frames ?? []).includes(previewFrame),
   );
-  const boundedLayers = previewLayers.filter((l) => l.layer_bounds != null);
-  const bbox = boundedLayers.reduce(
-    (acc, l) => {
-      const b = l.layer_bounds!;
-      return {
-        minX: Math.min(acc.minX, b.x),
-        minY: Math.min(acc.minY, b.y),
-        maxX: Math.max(acc.maxX, b.x + b.width),
-        maxY: Math.max(acc.maxY, b.y + b.height),
-      };
-    },
-    { minX: 0, minY: 0, maxX: canvasWidth, maxY: canvasHeight },
-  );
-  const srcWidth = Math.max(bbox.maxX - bbox.minX, 1);
-  const srcHeight = Math.max(bbox.maxY - bbox.minY, 1);
 
   return (
     <div className="flex flex-col gap-6 lg:flex-row">
@@ -228,7 +224,8 @@ export function LayersEditor({
             .map((layer) => {
               const classification = layer.classification as LayerClassification | null;
               const showTextField = classification === "texto" || !!layer.text_content;
-              const needsFrame = layer.frame == null && !layer.persistent;
+              const needsFrame = needsFrameFor(layer);
+              const layerFrames = layer.frames ?? [];
 
               return (
                 <li
@@ -289,47 +286,45 @@ export function LayersEditor({
                       </Badge>
                     )}
 
-                    <div className="flex gap-2">
-                      <select
-                        className="flex-1 rounded-md border border-input bg-transparent px-1.5 py-1 text-xs"
-                        value={classification ?? ""}
-                        onChange={(e) => updateLayer(layer.id, { classification: e.target.value })}
-                      >
-                        <option value="" disabled>
-                          Sin clasificar
+                    <select
+                      className="w-full rounded-md border border-input bg-transparent px-1.5 py-1 text-xs"
+                      value={classification ?? ""}
+                      onChange={(e) => updateLayer(layer.id, { classification: e.target.value })}
+                    >
+                      <option value="" disabled>
+                        Sin clasificar
+                      </option>
+                      {LAYER_CLASSIFICATIONS.map((c) => (
+                        <option key={c} value={c}>
+                          {CLASSIFICATION_LABELS[c]}
                         </option>
-                        {LAYER_CLASSIFICATIONS.map((c) => (
-                          <option key={c} value={c}>
-                            {CLASSIFICATION_LABELS[c]}
-                          </option>
-                        ))}
-                      </select>
+                      ))}
+                    </select>
 
-                      <select
-                        className={cn(
-                          "flex-1 rounded-md border border-input bg-transparent px-1.5 py-1 text-xs",
-                          needsFrame && "border-amber-400",
-                        )}
-                        value={frameSelectValue(layer)}
-                        onChange={(e) => {
-                          const value = e.target.value;
-                          if (value === "persistent") {
-                            updateLayer(layer.id, { persistent: true, frame: null });
-                          } else {
-                            updateLayer(layer.id, { persistent: false, frame: Number(value) });
-                          }
-                        }}
-                      >
-                        <option value="" disabled>
-                          Sin frame asignado
-                        </option>
-                        <option value="persistent">Persistente</option>
-                        {FRAME_OPTIONS.map((f) => (
-                          <option key={f} value={f}>
-                            Frame {f}
-                          </option>
-                        ))}
-                      </select>
+                    <div
+                      className={cn(
+                        "flex flex-wrap gap-x-3 gap-y-1 rounded-md border border-input px-1.5 py-1 text-xs",
+                        needsFrame && "border-amber-400",
+                      )}
+                    >
+                      <label className="flex items-center gap-1">
+                        <input
+                          type="checkbox"
+                          checked={layer.persistent}
+                          onChange={() => togglePersistent(layer)}
+                        />
+                        Persistente
+                      </label>
+                      {FRAME_OPTIONS.map((f) => (
+                        <label key={f} className="flex items-center gap-1">
+                          <input
+                            type="checkbox"
+                            checked={layerFrames.includes(f)}
+                            onChange={() => toggleFrame(layer, f)}
+                          />
+                          Frame {f}
+                        </label>
+                      ))}
                     </div>
 
                     {showTextField && (
@@ -343,7 +338,7 @@ export function LayersEditor({
                     )}
 
                     {needsFrame && (
-                      <span className="text-[10px] text-amber-700">Sin frame asignado</span>
+                      <span className="text-[10px] font-medium text-amber-700">⚠ Sin frame asignado</span>
                     )}
                   </div>
                 </li>
@@ -369,7 +364,7 @@ export function LayersEditor({
         {!canContinue && visible.length > 0 && (
           <p className="text-xs text-muted-foreground">
             {unassigned.length > 0
-              ? "Asigna frame o marca como persistente todas las capas antes de continuar."
+              ? `${unassigned.length} capa${unassigned.length === 1 ? "" : "s"} sin frame asignado — asigna frame o marca como persistente todas las capas antes de continuar.`
               : hasCriticalIncidents
                 ? "Hay incidencias críticas pendientes — regenera el análisis tras reclasificar."
                 : ""}
@@ -399,41 +394,57 @@ export function LayersEditor({
           ))}
         </div>
 
-        <div
-          className="relative w-full max-w-[480px] overflow-hidden rounded-lg border border-border bg-muted/30"
-          style={{ aspectRatio: `${canvasWidth} / ${canvasHeight}` }}
-        >
-          {previewLayers.length === 0 && (
-            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-              Sin capas para este frame.
-            </div>
-          )}
-          {previewLayers.map((layer) => {
-            const b = layer.layer_bounds;
-            const style = b
-              ? {
-                  left: `${((b.x - bbox.minX) / srcWidth) * 100}%`,
-                  top: `${((b.y - bbox.minY) / srcHeight) * 100}%`,
-                  width: `${(b.width / srcWidth) * 100}%`,
-                  height: `${(b.height / srcHeight) * 100}%`,
-                  opacity: layer.opacity ?? 1,
-                  zIndex: layer.z_index,
-                }
-              : { left: 0, top: 0, width: "100%", height: "100%", opacity: (layer.opacity ?? 1) * 0.5, zIndex: layer.z_index };
-
-            return (
-              <div key={layer.id} className="absolute" style={style}>
-                {layer.thumbnailUrl ? (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={layer.thumbnailUrl} alt="" className="h-full w-full object-contain" />
-                ) : (
-                  <div className="flex h-full w-full items-center justify-center bg-muted/60 text-center text-[10px] text-muted-foreground">
-                    {layer.layer_name}
-                  </div>
-                )}
+        <div className="max-w-full overflow-auto rounded-lg border border-border">
+          <div
+            style={{
+              position: "relative",
+              width: canvasWidth,
+              height: canvasHeight,
+              background: "#000",
+              overflow: "hidden",
+            }}
+          >
+            {previewLayers.length === 0 && (
+              <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                Sin capas para este frame.
               </div>
-            );
-          })}
+            )}
+            {previewLayers.map((layer) =>
+              layer.thumbnailUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  key={layer.id}
+                  src={layer.thumbnailUrl}
+                  alt=""
+                  style={{
+                    position: "absolute",
+                    left: Math.max(0, layer.layer_bounds?.x ?? 0),
+                    top: Math.max(0, layer.layer_bounds?.y ?? 0),
+                    width: layer.layer_bounds?.width ?? "100%",
+                    height: layer.layer_bounds?.height ?? "100%",
+                    opacity: layer.opacity ?? 1,
+                    zIndex: layer.z_index,
+                  }}
+                />
+              ) : (
+                <div
+                  key={layer.id}
+                  className="flex items-center justify-center bg-muted/60 text-center text-[10px] text-muted-foreground"
+                  style={{
+                    position: "absolute",
+                    left: Math.max(0, layer.layer_bounds?.x ?? 0),
+                    top: Math.max(0, layer.layer_bounds?.y ?? 0),
+                    width: layer.layer_bounds?.width ?? "100%",
+                    height: layer.layer_bounds?.height ?? "100%",
+                    opacity: layer.opacity ?? 1,
+                    zIndex: layer.z_index,
+                  }}
+                >
+                  {layer.layer_name}
+                </div>
+              ),
+            )}
+          </div>
         </div>
       </div>
     </div>

@@ -27,7 +27,7 @@ Devuelve SOLO el HTML completo, sin explicaciones, sin bloques de código markdo
 type Html5AssetDescriptor = {
   filename: string;
   classification: string | null;
-  frame: number | null;
+  frames: number[];
   persistent: boolean;
   layer_bounds: LayerBounds | null;
   text_content: string | null;
@@ -44,7 +44,7 @@ function toAssetDescriptor(asset: ProjectAsset, filename: string): Html5AssetDes
   return {
     filename,
     classification: asset.classification,
-    frame: asset.frame,
+    frames: asset.frames ?? [],
     persistent: asset.persistent,
     layer_bounds: asset.layer_bounds,
     text_content: asset.text_content,

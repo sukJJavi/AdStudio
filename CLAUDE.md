@@ -90,8 +90,9 @@ adaptaciones por formato, animación y exportación.
   Campos del editor de capas (Bloque 4, ver `app/project/[id]/layers`):
   | campo | tipo | uso |
   |---|---|---|
-  | frame | integer \| null | frame detectado (o elegido en el editor); null si no aplica |
-  | persistent | boolean | capa presente en todos los frames; si true, frame siempre null |
+  | frames | integer[] \| null | **Bloque 6, campo autoritativo**: frames a los que pertenece la capa (una capa puede estar en varios); vacío/null si no se asignó ninguno o es persistente |
+  | frame | integer \| null | *deprecado*, compatibilidad retroactiva — sincronizado como `frames[0] ?? null` desde `app/api/layers/asset/[assetId]/route.ts` |
+  | persistent | boolean | capa presente en todos los frames; si true, frame(s) siempre null/vacío |
   | discarded | boolean | descartada por el usuario, no se usa en master ni adaptaciones |
   | z_index | integer | orden de apilado dentro de su frame |
   | blend_mode | text \| null | modo de fusión del PSD (`layer.blendMode`) |

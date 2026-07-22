@@ -34,6 +34,7 @@ export async function getProjectLayers(projectId: string): Promise<ProjectLayer[
 export type LayerPatchableField =
   | "classification"
   | "frame"
+  | "frames"
   | "persistent"
   | "discarded"
   | "z_index"
@@ -42,13 +43,16 @@ export type LayerPatchableField =
 export const LAYER_PATCHABLE_FIELDS: LayerPatchableField[] = [
   "classification",
   "frame",
+  "frames",
   "persistent",
   "discarded",
   "z_index",
   "text_content",
 ];
 
-/** Capas listas para continuar al master: no hay ninguna sin frame asignado y sin marcar persistente. */
-export function hasUnassignedLayers(layers: Pick<ProjectAsset, "frame" | "persistent" | "discarded">[]): boolean {
-  return layers.some((l) => !l.discarded && l.frame == null && !l.persistent);
+/** Capas listas para continuar al master: no hay ninguna sin frames asignados y sin marcar persistente. */
+export function hasUnassignedLayers(
+  layers: Pick<ProjectAsset, "frames" | "persistent" | "discarded">[],
+): boolean {
+  return layers.some((l) => !l.discarded && !l.persistent && (l.frames ?? []).length === 0);
 }

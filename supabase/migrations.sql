@@ -129,3 +129,12 @@ alter table adstudio_assets
 -- HTML5 del master generado una única vez por Claude (lib/render/html5-generator.ts);
 -- las adaptaciones lo reutilizan vía adaptHtml5ToFormat() sin volver a llamar a Claude.
 alter table adstudio_projects add column if not exists master_html text default null;
+
+-- =========================================================
+-- Bloque 6 — múltiples frames por capa
+-- =========================================================
+
+-- Campo autoritativo: una capa puede pertenecer a varios frames a la vez.
+-- `frame` (integer) se mantiene por compatibilidad retroactiva, sincronizado como
+-- `frames[0] ?? null` desde app/api/layers/asset/[assetId]/route.ts.
+alter table adstudio_assets add column if not exists frames integer[] default null;

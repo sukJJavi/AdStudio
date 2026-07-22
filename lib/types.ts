@@ -113,8 +113,13 @@ export type ProjectAsset = {
   quality_score: number | null;
   status: AssetStatus;
   metadata: TextLayerMetadata | Record<string, never>;
-  /** Frame detectado desde la carpeta padre del PSD (null si no se detectó o si es persistente). */
+  /**
+   * @deprecated Compatibilidad retroactiva — leer/escribir `frames` en su lugar.
+   * Se mantiene sincronizado como `frames[0] ?? null` (ver app/api/layers/asset/[assetId]/route.ts).
+   */
   frame: number | null;
+  /** Campo autoritativo: frames a los que pertenece la capa (null/[] si no se asignó ninguno o es persistente). */
+  frames: number[] | null;
   /** Capa presente en todos los frames (fuera de cualquier carpeta "Frame N"). */
   persistent: boolean;
   /** Descartada por el usuario en el editor de capas — no se usa en el master ni en las adaptaciones. */

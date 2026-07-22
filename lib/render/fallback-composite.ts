@@ -22,8 +22,10 @@ export async function renderFallbackFromFrame(params: {
 }): Promise<Buffer> {
   const { assets, width, height, supabase } = params;
 
-  const ctaAssets = assets.filter((a) => a.classification === "cta" && !a.discarded && a.frame != null);
-  const targetFrame = ctaAssets.length > 0 ? Math.max(...ctaAssets.map((a) => a.frame as number)) : null;
+  const ctaFrames = assets
+    .filter((a) => a.classification === "cta" && !a.discarded)
+    .flatMap((a) => a.frames ?? []);
+  const targetFrame = ctaFrames.length > 0 ? Math.max(...ctaFrames) : null;
 
   const layers = assets
     .filter(
@@ -31,7 +33,7 @@ export async function renderFallbackFromFrame(params: {
         !a.discarded &&
         a.file_path &&
         a.layer_bounds &&
-        (a.persistent || (targetFrame != null && a.frame === targetFrame)),
+        (a.persistent || (targetFrame != null && (a.frames ?? []).includes(targetFrame))),
     )
     .sort((a, b) => (a.z_index ?? 0) - (b.z_index ?? 0));
 
@@ -39,13 +41,33 @@ export async function renderFallbackFromFrame(params: {
     layers.map(async (layer) => ({ layer, buffer: await downloadAsset(supabase, layer.file_path) })),
   );
 
-  const composite = layerBuffers.flatMap(({ layer, buffer }) => {
-    if (!buffer || !layer.layer_bounds) return [];
-    const top = Math.max(0, layer.layer_bounds.y);
-    const left = Math.max(0, layer.layer_bounds.x);
-    if (left >= width || top >= height) return [];
-    return [{ input: buffer, top, left }];
-  });
+  const composite: { input: Buffer; top: number; left: number }[] = [];
+
+  for (const { layer, buffer } of layerBuffers) {
+    const bounds = layer.layer_bounds;
+    if (!buffer || !bounds) continue;
+
+    // Recorta cada capa al área visible dentro del canvas — sharp exige que la
+    // imagen a compositar quepa dentro del lienzo, y algunas capas del PSD son
+    // mayores que el canvas o se salen de sus bordes. `extract()` exige enteros,
+    // de ahí los Math.round (layer_bounds puede traer valores no enteros).
+    const srcX = Math.round(Math.max(0, -bounds.x)); // offset dentro del PNG de la capa
+    const srcY = Math.round(Math.max(0, -bounds.y));
+    const dstX = Math.round(Math.max(0, bounds.x)); // posición en el canvas
+    const dstY = Math.round(Math.max(0, bounds.y));
+
+    const visibleWidth = Math.floor(Math.min(bounds.width - srcX, width - dstX));
+    const visibleHeight = Math.floor(Math.min(bounds.height - srcY, height - dstY));
+
+    if (visibleWidth <= 0 || visibleHeight <= 0) continue;
+
+    const croppedBuffer = await sharp(buffer)
+      .extract({ left: srcX, top: srcY, width: visibleWidth, height: visibleHeight })
+      .png()
+      .toBuffer();
+
+    composite.push({ input: croppedBuffer, top: dstY, left: dstX });
+  }
 
   let lastBuffer: Buffer | null = null;
 

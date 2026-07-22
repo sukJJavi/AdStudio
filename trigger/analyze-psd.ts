@@ -279,6 +279,7 @@ export const analyzePsd = task({
             // automáticamente (ver app/guide/psd/page.tsx).
             status: hidden ? "processed" : "processing",
             frame,
+            frames: frame != null ? [frame] : null,
             persistent,
             discarded: hidden,
             z_index: z,

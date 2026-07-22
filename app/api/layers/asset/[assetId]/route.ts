@@ -36,8 +36,19 @@ export async function PATCH(
     return NextResponse.json({ error: "No hay campos válidos para actualizar" }, { status: 400 });
   }
 
-  // "Persistente" desde el select de frame implica frame=null (mutuamente excluyentes).
-  if (update.persistent === true) update.frame = null;
+  // `frames` es el campo autoritativo; `frame` se mantiene sincronizado como
+  // frames[0] ?? null por compatibilidad retroactiva (ver lib/types.ts).
+  if ("frames" in update) {
+    const frames = (update.frames as number[] | null) ?? null;
+    update.frame = frames && frames.length > 0 ? frames[0] : null;
+    if (frames && frames.length > 0) update.persistent = false;
+  }
+
+  // "Persistente" implica frame(s)=null (mutuamente excluyentes).
+  if (update.persistent === true) {
+    update.frame = null;
+    update.frames = null;
+  }
 
   const { data: updated, error } = await supabase
     .from("adstudio_assets")

@@ -97,6 +97,9 @@ create table if not exists adstudio_assets (
   text_content text default null,
   -- { x, y, width, height } en píxeles relativos al canvas
   layer_bounds jsonb default null,
+  -- Bloque 6: campo autoritativo de frames — una capa puede pertenecer a varios
+  -- a la vez. `frame` se mantiene por compatibilidad, sincronizado a frames[0].
+  frames integer[] default null,
   created_at timestamptz not null default now()
 );
 
@@ -113,6 +116,8 @@ alter table adstudio_assets
   add column if not exists opacity numeric default 1,
   add column if not exists text_content text default null,
   add column if not exists layer_bounds jsonb default null;
+
+alter table adstudio_assets add column if not exists frames integer[] default null;
 
 -- Masters generados (Bloque 2). Un proyecto puede tener varias variantes
 -- (una por formato IAB usado como canvas); is_primary marca la usada para
