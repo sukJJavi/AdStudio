@@ -124,6 +124,10 @@ export type ProjectAsset = {
   persistent: boolean;
   /** Descartada por el usuario en el editor de capas — no se usa en el master ni en las adaptaciones. */
   discarded: boolean;
+  /** Capa oculta en el PSD original (layer.hidden) — ya no se descarta automáticamente, el usuario decide. */
+  hidden_in_psd: boolean;
+  /** Exportar como JPG calidad 85 en el ZIP en vez de PNG — solo aplicable a fondo/imagen_principal. */
+  export_as_jpg: boolean;
   /** Orden de apilado dentro de su frame (mayor = más arriba). */
   z_index: number;
   blend_mode: string | null;

@@ -43,6 +43,9 @@ function needsFrameFor(layer: Pick<ProjectLayer, "frames" | "persistent">): bool
   return !layer.persistent && (layer.frames ?? []).length === 0;
 }
 
+/** El toggle "JPG" solo tiene sentido para las capas que razonablemente ocupan gran parte del canvas. */
+const JPG_TOGGLE_CLASSIFICATIONS = new Set(["fondo", "imagen_principal"]);
+
 async function patchLayer(id: string, body: Record<string, unknown>) {
   const res = await fetch(`/api/layers/asset/${id}`, {
     method: "PATCH",
@@ -165,6 +168,7 @@ export function LayersEditor({
             persistent: layer.persistent,
             text_content: layer.text_content,
             z_index: layer.z_index,
+            export_as_jpg: layer.export_as_jpg,
           });
         }),
       );
@@ -263,6 +267,11 @@ export function LayersEditor({
                     <span className="text-[10px] text-muted-foreground">
                       {Math.round((layer.opacity ?? 1) * 100)}% · {layer.blend_mode ?? "normal"}
                     </span>
+                    {layer.hidden_in_psd && (
+                      <Badge className="w-fit bg-slate-700 text-[9px] text-slate-100" title="Capa oculta en el PSD original">
+                        👁️‍🗨️ Oculta en PSD
+                      </Badge>
+                    )}
                   </div>
 
                   <div className="flex flex-1 flex-col gap-1.5">
@@ -280,11 +289,23 @@ export function LayersEditor({
                       </button>
                     </div>
 
-                    {classification && (
-                      <Badge className={cn("w-fit", CLASSIFICATION_COLORS[classification])}>
-                        {CLASSIFICATION_LABELS[classification] ?? classification}
-                      </Badge>
-                    )}
+                    <div className="flex flex-wrap items-center gap-2">
+                      {classification && (
+                        <Badge className={cn("w-fit", CLASSIFICATION_COLORS[classification])}>
+                          {CLASSIFICATION_LABELS[classification] ?? classification}
+                        </Badge>
+                      )}
+                      {classification && JPG_TOGGLE_CLASSIFICATIONS.has(classification) && (
+                        <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                          <input
+                            type="checkbox"
+                            checked={!!layer.export_as_jpg}
+                            onChange={(e) => updateLayer(layer.id, { export_as_jpg: e.target.checked })}
+                          />
+                          JPG
+                        </label>
+                      )}
+                    </div>
 
                     <select
                       className="w-full rounded-md border border-input bg-transparent px-1.5 py-1 text-xs"

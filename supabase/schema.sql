@@ -100,6 +100,11 @@ create table if not exists adstudio_assets (
   -- Bloque 6: campo autoritativo de frames — una capa puede pertenecer a varios
   -- a la vez. `frame` se mantiene por compatibilidad, sincronizado a frames[0].
   frames integer[] default null,
+  -- Bloque 7: las capas ocultas del PSD ya no se descartan automáticamente —
+  -- se marcan con hidden_in_psd y el usuario decide en el editor. export_as_jpg
+  -- lo activa el usuario por capa (fondo/imagen_principal) para el ZIP.
+  hidden_in_psd boolean default false,
+  export_as_jpg boolean default false,
   created_at timestamptz not null default now()
 );
 
@@ -118,6 +123,9 @@ alter table adstudio_assets
   add column if not exists layer_bounds jsonb default null;
 
 alter table adstudio_assets add column if not exists frames integer[] default null;
+
+alter table adstudio_assets add column if not exists hidden_in_psd boolean default false;
+alter table adstudio_assets add column if not exists export_as_jpg boolean default false;
 
 -- Masters generados (Bloque 2). Un proyecto puede tener varias variantes
 -- (una por formato IAB usado como canvas); is_primary marca la usada para

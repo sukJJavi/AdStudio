@@ -52,7 +52,8 @@ export type LayerPatchableField =
   | "persistent"
   | "discarded"
   | "z_index"
-  | "text_content";
+  | "text_content"
+  | "export_as_jpg";
 
 export const LAYER_PATCHABLE_FIELDS: LayerPatchableField[] = [
   "classification",
@@ -62,6 +63,7 @@ export const LAYER_PATCHABLE_FIELDS: LayerPatchableField[] = [
   "discarded",
   "z_index",
   "text_content",
+  "export_as_jpg",
 ];
 
 /** Capas listas para continuar al master: no hay ninguna sin frames asignados y sin marcar persistente. */

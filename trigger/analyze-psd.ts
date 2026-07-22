@@ -148,11 +148,17 @@ function baseFilenameFor(params: {
   return classification;
 }
 
-/** Añade índice de desambiguación (`_2`, `_3`, ...) si el nombre base ya se usó en el proyecto. */
-function uniqueFilename(base: string, usedCounts: Map<string, number>, ext: "png" | "jpg" = "png"): string {
+/**
+ * Añade índice de desambiguación (`_2`, `_3`, ...) si el nombre base ya se usó
+ * en el proyecto. Siempre `.png` — la decisión de exportar como JPG es del
+ * usuario (`adstudio_assets.export_as_jpg`) y se aplica en el momento de
+ * construir el ZIP (trigger/render-master.ts, trigger/render-adaptations.ts),
+ * no aquí.
+ */
+function uniqueFilename(base: string, usedCounts: Map<string, number>): string {
   const count = (usedCounts.get(base) ?? 0) + 1;
   usedCounts.set(base, count);
-  return count === 1 ? `${base}.${ext}` : `${base}_${count}.${ext}`;
+  return count === 1 ? `${base}.png` : `${base}_${count}.png`;
 }
 
 export const analyzePsd = task({
@@ -188,8 +194,8 @@ export const analyzePsd = task({
     const usedFilenames = new Map<string, number>();
 
     type InsertedRow = { id: string; layer: Layer; frame: number | null; persistent: boolean; dpi: number | null };
-    // Combinado entre todos los PSDs del proyecto: "la capa de mayor área del proyecto"
-    // (fix 1 de fondo-como-JPG) se calcula sobre el total, no por archivo.
+    // Combinado entre todos los PSDs del proyecto (dos PSDs comparten carpeta de
+    // Storage `{project_id}/layers/`, ver uniqueFilename más abajo).
     const allInsertedRows: InsertedRow[] = [];
 
     for (const psdAsset of psdAssets ?? []) {
@@ -275,13 +281,15 @@ export const analyzePsd = task({
             dpi,
             file_path: null,
             quality_score: null,
-            // Las capas ocultas del PSD se detectan pero se descartan
-            // automáticamente (ver app/guide/psd/page.tsx).
-            status: hidden ? "processed" : "processing",
+            status: "processing",
             frame,
             frames: frame != null ? [frame] : null,
             persistent,
-            discarded: hidden,
+            // Las capas ocultas del PSD ya NO se descartan automáticamente — se
+            // procesan igual que las visibles (clasificación + export) y el
+            // usuario decide en el editor de capas si las descarta o las usa.
+            hidden_in_psd: hidden,
+            discarded: false,
             z_index: z,
             blend_mode: layer.blendMode ?? null,
             opacity: (layer.opacity ?? 255) / 255,
@@ -300,8 +308,8 @@ export const analyzePsd = task({
 
         if (!insertError && inserted) {
           layersExtracted += 1;
-          // Las capas ocultas no se aplanan a PNG ni se clasifican con Claude Vision.
-          if (!hidden) allInsertedRows.push({ id: inserted.id as string, layer, frame, persistent, dpi });
+          // Las capas ocultas también se clasifican y exportan (ver hidden_in_psd arriba).
+          allInsertedRows.push({ id: inserted.id as string, layer, frame, persistent, dpi });
         }
       }
     }
@@ -310,19 +318,6 @@ export const analyzePsd = task({
     metadata.set("progress", 0.5);
 
     const flattenable = allInsertedRows.filter(({ layer }) => layer.imageData);
-
-    // "La capa de mayor área del proyecto" (fix 1 background-como-JPG): se trata como
-    // imagen de fondo aunque Claude Vision no la haya clasificado como 'fondo'.
-    let largestAreaAssetId: string | null = null;
-    let largestArea = -1;
-    for (const { id, layer } of flattenable) {
-      const imageData = layer.imageData!;
-      const area = imageData.width * imageData.height;
-      if (area > largestArea) {
-        largestArea = area;
-        largestAreaAssetId = id;
-      }
-    }
 
     for (let i = 0; i < flattenable.length; i++) {
       const { id: assetId, layer, frame, persistent, dpi } = flattenable[i];
@@ -348,22 +343,12 @@ export const analyzePsd = task({
       const textMetadata = extractTextMetadata(layer);
       const classification = textMetadata ? "texto" : await classifyLayerImage(pngBuffer);
 
-      // Fix 1: fondo/imagen de mayor área -> JPG calidad 85 (background.jpg) en vez de PNG.
-      const isBackgroundLayer = classification === "fondo" || assetId === largestAreaAssetId;
-
-      const filenameBase = isBackgroundLayer
-        ? "background"
-        : baseFilenameFor({ classification, frame, persistent, layerName: layer.name ?? "capa" });
-      const filename = uniqueFilename(filenameBase, usedFilenames, isBackgroundLayer ? "jpg" : "png");
-
-      const exportBuffer = isBackgroundLayer
-        ? await sharp(pixelBuffer, {
-            raw: { width: imageData.width, height: imageData.height, channels: 4 },
-          })
-            .jpeg({ quality: 85 })
-            .toBuffer()
-        : pngBuffer;
-      const contentType = isBackgroundLayer ? "image/jpeg" : "image/png";
+      // Fix 2: siempre PNG aquí — el JPG es una elección del usuario en el editor
+      // de capas (export_as_jpg), aplicada al construir el ZIP, no en el análisis.
+      const filenameBase = baseFilenameFor({ classification, frame, persistent, layerName: layer.name ?? "capa" });
+      const filename = uniqueFilename(filenameBase, usedFilenames);
+      const exportBuffer = pngBuffer;
+      const contentType = "image/png";
 
       const storagePath = `${payload.projectId}/layers/${filename}`;
 

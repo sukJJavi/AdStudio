@@ -94,6 +94,8 @@ adaptaciones por formato, animación y exportación.
   | frame | integer \| null | *deprecado*, compatibilidad retroactiva — sincronizado como `frames[0] ?? null` desde `app/api/layers/asset/[assetId]/route.ts` |
   | persistent | boolean | capa presente en todos los frames; si true, frame(s) siempre null/vacío |
   | discarded | boolean | descartada por el usuario, no se usa en master ni adaptaciones |
+  | hidden_in_psd | boolean | **Bloque 7**: capa oculta en el PSD original (`layer.hidden`) — ya NO se descarta automáticamente, se clasifica/exporta igual que las visibles y el usuario decide en el editor |
+  | export_as_jpg | boolean | **Bloque 7**: exportar como JPG calidad 85 en el ZIP en vez de PNG (toggle del editor, solo para `fondo`/`imagen_principal`); el PNG en Storage nunca cambia, la conversión ocurre al construir el ZIP (`lib/render/export-format.ts`) |
   | z_index | integer | orden de apilado dentro de su frame |
   | blend_mode | text \| null | modo de fusión del PSD (`layer.blendMode`) |
   | opacity | numeric | 0–1, `layer.opacity / 255` |

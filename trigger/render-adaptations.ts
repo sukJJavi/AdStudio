@@ -6,6 +6,7 @@ import { downloadAsset } from "@/lib/render/assets";
 import { adaptHtml5ToFormat } from "@/lib/render/html5-generator";
 import { getHtml5Master } from "@/lib/render/html5-cache";
 import { renderFallbackFromFrame } from "@/lib/render/fallback-composite";
+import { exportBufferFor, exportFilenameFor } from "@/lib/render/export-format";
 import {
   buildManifestJson,
   buildZipBuffer,
@@ -63,18 +64,22 @@ export const renderAdaptations = task({
     metadata.set("progress", 0.05);
 
     // Los PNGs del master (por ahora, sin escalado por formato — ver adaptHtml5ToFormat)
-    // se descargan una única vez y se reutilizan en el ZIP de cada formato.
+    // se descargan una única vez y se reutilizan en el ZIP de cada formato. Fix 3:
+    // el PNG original en Storage nunca cambia — la conversión a JPG (export_as_jpg)
+    // se aplica aquí, al construir el ZIP, igual que en trigger/render-master.ts.
     const masterPngEntries = (
       await Promise.all(
         allAssets
           .filter((a) => !a.discarded)
           .flatMap((a) => {
-            const filename = assetFilename(a);
-            return filename && a.file_path ? [{ filename, filePath: a.file_path }] : [];
+            const pngFilename = assetFilename(a);
+            return pngFilename && a.file_path ? [{ asset: a, pngFilename }] : [];
           })
-          .map(async ({ filename, filePath }) => {
-            const buffer = await downloadAsset(supabase, filePath);
-            return buffer ? { filename, buffer } : null;
+          .map(async ({ asset, pngFilename }) => {
+            const buffer = await downloadAsset(supabase, asset.file_path);
+            if (!buffer) return null;
+            const exported = await exportBufferFor(buffer, !!asset.export_as_jpg);
+            return { filename: exportFilenameFor(pngFilename, !!asset.export_as_jpg), buffer: exported };
           }),
       )
     ).filter((entry): entry is { filename: string; buffer: Buffer } => entry != null);

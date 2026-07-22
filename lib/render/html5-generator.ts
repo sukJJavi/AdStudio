@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClaudeClient } from "@/lib/claude/client";
+import { exportFilenameFor } from "@/lib/render/export-format";
 import type { LayerBounds, ProjectAsset, TextLayerMetadata } from "@/lib/types";
 
 export type Html5FormatSpec = { width: number; height: number; iabFormat: string };
@@ -48,9 +49,11 @@ function assetFilename(asset: ProjectAsset): string | null {
   return typeof filename === "string" && filename.trim() ? filename : null;
 }
 
-function toAssetDescriptor(asset: ProjectAsset, filename: string): Html5AssetDescriptor {
+function toAssetDescriptor(asset: ProjectAsset, pngFilename: string): Html5AssetDescriptor {
   return {
-    filename,
+    // Fix 2: el HTML debe referenciar el nombre con la extensión correcta
+    // ("background.jpg" o "imagen_principal.png") según export_as_jpg.
+    filename: exportFilenameFor(pngFilename, !!asset.export_as_jpg),
     classification: asset.classification,
     frames: asset.frames ?? [],
     persistent: asset.persistent,

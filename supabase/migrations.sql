@@ -138,3 +138,17 @@ alter table adstudio_projects add column if not exists master_html text default 
 -- `frame` (integer) se mantiene por compatibilidad retroactiva, sincronizado como
 -- `frames[0] ?? null` desde app/api/layers/asset/[assetId]/route.ts.
 alter table adstudio_assets add column if not exists frames integer[] default null;
+
+-- =========================================================
+-- Bloque 7 — capas ocultas del PSD y exportación JPG/PNG por usuario
+-- =========================================================
+
+-- Las capas ocultas del PSD (layer.hidden) ya NO se descartan automáticamente:
+-- se clasifican y exportan igual que las visibles, marcadas con hidden_in_psd,
+-- y el usuario decide en el editor de capas si las descarta (ver trigger/analyze-psd.ts).
+alter table adstudio_assets add column if not exists hidden_in_psd boolean default false;
+
+-- Todas las capas se exportan como PNG por defecto — export_as_jpg lo activa el
+-- usuario por capa en el editor (solo visible para fondo/imagen_principal) y se
+-- aplica al construir el ZIP (trigger/render-master.ts, trigger/render-adaptations.ts).
+alter table adstudio_assets add column if not exists export_as_jpg boolean default false;

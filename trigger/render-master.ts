@@ -10,6 +10,7 @@ import { renderFallbackFromFrame } from "@/lib/render/fallback-composite";
 import { generateHtml5Master } from "@/lib/render/html5-generator";
 import { saveHtml5Master } from "@/lib/render/html5-cache";
 import { readAnimationGuideText } from "@/lib/render/animation-guide";
+import { exportBufferFor, exportFilenameFor } from "@/lib/render/export-format";
 import { buildZipBuffer, type ZipFileEntry } from "@/lib/export/zip";
 import type { ProjectAsset, ProjectFormat, TextLayerMetadata } from "@/lib/types";
 
@@ -137,18 +138,25 @@ export const renderMaster = task({
     metadata.set("step", "empaquetando-zip");
     metadata.set("progress", 0.8);
 
-    const filenameToPath = new Map<string, string>();
+    // Fix 3: el nombre "lógico" (con la extensión correcta) es la clave — el PNG
+    // original en Storage nunca cambia de nombre/formato; la conversión a JPG
+    // (si export_as_jpg) ocurre aquí, al construir el ZIP.
+    const filenameToAsset = new Map<string, ProjectAsset>();
     for (const asset of allAssets) {
-      const filename = assetFilename(asset);
-      if (filename && asset.file_path) filenameToPath.set(filename, asset.file_path);
+      const pngFilename = assetFilename(asset);
+      if (!pngFilename || !asset.file_path) continue;
+      filenameToAsset.set(exportFilenameFor(pngFilename, !!asset.export_as_jpg), asset);
     }
 
     const pngEntries = (
       await Promise.all(
         assetFilenames.map(async (filename) => {
-          const path = filenameToPath.get(filename) ?? null;
-          const buffer = await downloadAsset(supabase, path);
-          return buffer ? { filename, buffer } : null;
+          const asset = filenameToAsset.get(filename);
+          if (!asset?.file_path) return null;
+          const buffer = await downloadAsset(supabase, asset.file_path);
+          if (!buffer) return null;
+          const exported = await exportBufferFor(buffer, !!asset.export_as_jpg);
+          return { filename, buffer: exported };
         }),
       )
     ).filter((entry): entry is { filename: string; buffer: Buffer } => entry != null);
