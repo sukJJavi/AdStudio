@@ -4,6 +4,31 @@ import type { ProjectAsset, TextLayerMetadata } from "@/lib/types";
 
 const TARGET_MAX_BYTES = 50 * 1024;
 
+function sanitizeLayerName(name: string): string {
+  return name.trim().toLowerCase().replace(/\s+/g, "_");
+}
+
+/**
+ * Nombre del PNG original en Storage para una capa: `metadata.filename` con la
+ * extensión normalizada a `.png` (el `.jpg` solo existe en el ZIP cuando
+ * `export_as_jpg`, ver lib/render/export-format.ts — en Storage siempre está
+ * el PNG). Si falta `metadata.filename` (asset sin metadata seteado
+ * correctamente), cae a `layer_name` saneado + `.png`.
+ */
+function pngFilenameFor(layer: Pick<ProjectAsset, "metadata" | "layer_name">): string | null {
+  const metadataFilename = (layer.metadata as TextLayerMetadata | undefined)?.filename ?? null;
+
+  if (metadataFilename) {
+    return metadataFilename.replace(/\.jpg$/i, ".png");
+  }
+
+  if (layer.layer_name) {
+    return `${sanitizeLayerName(layer.layer_name)}.png`;
+  }
+
+  return null;
+}
+
 /**
  * Compone el fallback.jpg a partir de las capas reales del frame del CTA
  * (persistentes + capas de ese frame, ordenadas por z_index) — o, si no hay
@@ -57,16 +82,26 @@ export async function renderFallbackFromFrame(
     // Descargar PNG original de Storage (siempre PNG para composición): el
     // fichero convertido a JPG por export_as_jpg solo existe en el ZIP, no en
     // Storage — ver lib/render/export-format.ts.
-    const metadataFilename = (layer.metadata as TextLayerMetadata | undefined)?.filename ?? null;
-    const pngFilename = metadataFilename?.replace(/\.jpg$/i, ".png") ?? layer.layer_name;
-    if (!pngFilename) continue;
+    const pngFilename = pngFilenameFor(layer);
+    if (!pngFilename) {
+      console.error("Capa sin metadata.filename ni layer_name, no se puede componer:", {
+        id: layer.id,
+        layer_name: layer.layer_name,
+      });
+      continue;
+    }
 
     const storagePath = `${projectId}/layers/${pngFilename}`;
 
+    console.log("Intentando descargar:", storagePath);
     const { data, error } = await supabase.storage.from("adstudio-projects").download(storagePath);
+    console.log("Resultado:", { ok: !!data, error: error?.message });
 
     if (error || !data) {
-      console.error("Error descargando layer:", storagePath, error);
+      console.error("Error descargando layer, se omite del fallback pero se sigue con el resto:", {
+        storagePath,
+        error,
+      });
       continue;
     }
 
