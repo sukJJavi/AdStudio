@@ -33,6 +33,8 @@ export type Project = {
   font_primary: string;
   /** Reservada para un futuro par claim/subclaim; no usada todavía. */
   font_secondary: string | null;
+  /** HTML5 del master generado por Claude (ver lib/render/html5-generator.ts), cacheado para que las adaptaciones lo reutilicen sin volver a llamar a Claude. */
+  master_html: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -66,11 +68,18 @@ export type AssetType = "psd" | "excel" | "animation";
 
 export type AssetStatus = "uploaded" | "processing" | "processed" | "error";
 
-/** `adstudio_assets.metadata` para capas clasificadas como 'texto'. Vacío ({}) para el resto. */
+/**
+ * `adstudio_assets.metadata`. `fontName`/`fontSize`/`content` solo se rellenan en
+ * capas clasificadas como 'texto'. `filename` se rellena en toda capa aplanada a
+ * PNG (ver trigger/analyze-psd.ts) — es el nombre de fichero usado en Storage
+ * (`{project_id}/layers/{filename}`) y referenciado por el HTML5 generado en
+ * lib/render/html5-generator.ts.
+ */
 export type TextLayerMetadata = {
   fontName?: string | null;
   fontSize?: number | null;
   content?: string | null;
+  filename?: string | null;
 };
 
 /** { x, y, width, height } en píxeles relativos al canvas — ver adstudio_assets.layer_bounds. */

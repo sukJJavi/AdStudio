@@ -1,13 +1,16 @@
 import { task, metadata } from "@trigger.dev/sdk/v3";
 import { createTriggerSupabaseClient } from "@/lib/supabase/trigger-client";
 import { getIABFormatById, type IABFormat } from "@/lib/iab/specs";
-import { fontFamilyStack, googleFontUrl } from "@/lib/fonts";
+import { fontFamilyStack } from "@/lib/fonts";
 import { splitCopy } from "@/lib/render/copy";
 import { pickLargestBy, selectClassifiedAssets, downloadAsset } from "@/lib/render/assets";
 import { loadGoogleFont } from "@/lib/render/font-loader";
 import { renderBannerToJpg, renderBannerToPng } from "@/lib/render/jpg-renderer";
-import { generateHtml5 } from "@/lib/render/html5-generator";
-import type { ProjectFormat } from "@/lib/types";
+import { generateHtml5Master } from "@/lib/render/html5-generator";
+import { saveHtml5Master } from "@/lib/render/html5-cache";
+import { readAnimationGuideText } from "@/lib/render/animation-guide";
+import { buildZipBuffer, type ZipFileEntry } from "@/lib/export/zip";
+import type { ProjectAsset, ProjectFormat, TextLayerMetadata } from "@/lib/types";
 
 type RenderMasterPayload = {
   projectId: string;
@@ -17,6 +20,12 @@ type RenderMasterPayload = {
 
 function toBase64(buffer: Buffer | null): string | undefined {
   return buffer ? buffer.toString("base64") : undefined;
+}
+
+/** `adstudio_assets.metadata.filename` — nombre de fichero asignado en trigger/analyze-psd.ts. */
+function assetFilename(asset: ProjectAsset): string | null {
+  const filename = (asset.metadata as TextLayerMetadata | undefined)?.filename;
+  return typeof filename === "string" && filename.trim() ? filename : null;
 }
 
 export const renderMaster = task({
@@ -33,7 +42,8 @@ export const renderMaster = task({
       supabase.from("adstudio_projects").select("font_primary").eq("id", payload.projectId).single(),
     ]);
 
-    const { byClassification } = selectClassifiedAssets(assets ?? []);
+    const allAssets = (assets ?? []) as ProjectAsset[];
+    const { byClassification } = selectClassifiedAssets(allAssets);
 
     metadata.set("step", "seleccionando-formato");
     metadata.set("progress", 0.1);
@@ -76,7 +86,6 @@ export const renderMaster = task({
 
     const { claim, subclaim, disclaimer } = splitCopy(format.copy ?? null);
     const fontFamily = fontFamilyStack(fontPrimary);
-    const fontImportUrl = googleFontUrl(fontPrimary);
 
     const bannerElements = {
       width: spec.ancho,
@@ -96,7 +105,7 @@ export const renderMaster = task({
     };
 
     metadata.set("step", "renderizando-jpg");
-    metadata.set("progress", 0.55);
+    metadata.set("progress", 0.45);
 
     const [jpgBuffer, pngBuffer] = await Promise.all([
       renderBannerToJpg(bannerElements),
@@ -104,24 +113,48 @@ export const renderMaster = task({
     ]);
 
     metadata.set("step", "generando-html5");
-    metadata.set("progress", 0.75);
+    metadata.set("progress", 0.6);
 
-    const html = generateHtml5({
-      width: spec.ancho,
-      height: spec.alto,
-      backgroundColor: "#FFFFFF",
-      backgroundImageBase64: toBase64(fondoBuffer) ?? null,
-      logoBase64: toBase64(logoBuffer) ?? null,
-      logoAspectRatio,
-      mainImageBase64: toBase64(imagenPrincipalBuffer) ?? null,
-      claim,
-      subclaim,
-      cta: claim,
-      disclaimer,
-      fontFamily,
-      googleFontImportUrl: fontImportUrl,
-      fallbackJpgBase64: jpgBuffer.toString("base64"),
-    });
+    const animationGuide = await readAnimationGuideText(allAssets, supabase);
+    const clickTagUrl = format.url_destino ?? "";
+
+    const { html, assetFilenames } = await generateHtml5Master(
+      payload.projectId,
+      { width: spec.ancho, height: spec.alto, iabFormat: format.iab_format },
+      allAssets,
+      animationGuide,
+      clickTagUrl,
+      supabase,
+    );
+
+    await saveHtml5Master(payload.projectId, html, supabase);
+
+    metadata.set("step", "empaquetando-zip");
+    metadata.set("progress", 0.8);
+
+    const filenameToPath = new Map<string, string>();
+    for (const asset of allAssets) {
+      const filename = assetFilename(asset);
+      if (filename && asset.file_path) filenameToPath.set(filename, asset.file_path);
+    }
+
+    const pngEntries = (
+      await Promise.all(
+        assetFilenames.map(async (filename) => {
+          const path = filenameToPath.get(filename) ?? null;
+          const buffer = await downloadAsset(supabase, path);
+          return buffer ? { filename, buffer } : null;
+        }),
+      )
+    ).filter((entry): entry is { filename: string; buffer: Buffer } => entry != null);
+
+    const zipEntries: ZipFileEntry[] = [
+      { path: "index.html", content: html },
+      ...pngEntries.map((entry) => ({ path: entry.filename, content: entry.buffer })),
+      { path: "fallback.jpg", content: jpgBuffer },
+    ];
+
+    const zipBuffer = await buildZipBuffer(zipEntries);
 
     metadata.set("step", "subiendo-archivos");
     metadata.set("progress", 0.9);
@@ -138,6 +171,12 @@ export const renderMaster = task({
       supabase.storage
         .from("adstudio-projects")
         .upload(`${basePath}.html`, html, { contentType: "text/html", upsert: true }),
+      supabase.storage
+        .from("adstudio-projects")
+        .upload(`${payload.projectId}/master/master.zip`, zipBuffer, {
+          contentType: "application/zip",
+          upsert: true,
+        }),
     ]);
 
     const isPrimary = payload.isPrimary ?? false;

@@ -1,174 +1,140 @@
-import { GSAP_CDN_URL, buildGsapAnimationScript } from "@/lib/animation/gsap-preset";
-import { computeBannerLayout } from "@/lib/render/layout";
+import type { SupabaseClient } from "@supabase/supabase-js";
+import { createClaudeClient } from "@/lib/claude/client";
+import type { LayerBounds, ProjectAsset, TextLayerMetadata } from "@/lib/types";
 
-export type Html5BannerParams = {
-  width: number;
-  height: number;
-  backgroundColor: string;
-  backgroundImageBase64?: string | null;
-  logoBase64?: string | null;
-  logoAspectRatio?: number | null;
-  mainImageBase64?: string | null;
-  claim?: string | null;
-  subclaim?: string | null;
-  cta?: string | null;
-  disclaimer?: string | null;
-  fontFamily: string;
-  googleFontImportUrl: string;
-  /** JPG ya renderizado con Satori (`renderBannerToJpg`), en base64, para el `<noscript>`. */
-  fallbackJpgBase64: string;
+export type Html5FormatSpec = { width: number; height: number; iabFormat: string };
+
+const SYSTEM_PROMPT = `Eres un experto en producción de publicidad digital con 20 años de experiencia generando piezas HTML5 para campañas de display IAB.
+
+Recibes la estructura de capas de un banner publicitario y generas el HTML5 de producción profesional.
+
+REGLAS DE PRODUCCIÓN:
+- Cada asset es un PNG del tamaño exacto del canvas posicionado con position:absolute, top:0, left:0, width:100%, height:100%
+- El fondo del #ad es siempre negro (#000)
+- Siempre incluye clickTag como variable JS global
+- La capa de clickthrough es un div transparente position:absolute que cubre el 100% del ad, z-index máximo, con onclick='window.open(window.clickTag)'
+- La animación se infiere del orden de frames y nombres de capas. Si hay guía de animación, úsala.
+- Usa CSS transitions + setTimeout para la animación, NO librerías externas
+- El timeline debe ser un array de objetos ejecutable con la función startTimeline estándar IAB
+- Máximo 15 segundos de animación, máximo 3 loops
+- Incluye función loopea() para el loop automático
+- Assets referenciados por filename, nunca en base64
+- Compatible con Google Display Network, Xandr, The Trade Desk
+
+FORMATO DE RESPUESTA:
+Devuelve SOLO el HTML completo, sin explicaciones, sin bloques de código markdown, comenzando con <!doctype html>`;
+
+type Html5AssetDescriptor = {
+  filename: string;
+  classification: string | null;
+  frame: number | null;
+  persistent: boolean;
+  layer_bounds: LayerBounds | null;
+  text_content: string | null;
+  opacity: number | null;
+  blend_mode: string | null;
 };
 
-function escapeHtml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+function assetFilename(asset: ProjectAsset): string | null {
+  const filename = (asset.metadata as TextLayerMetadata | undefined)?.filename;
+  return typeof filename === "string" && filename.trim() ? filename : null;
 }
 
-function imgSrc(base64: string | null | undefined): string | null {
-  return base64 ? `data:image/png;base64,${base64}` : null;
+function toAssetDescriptor(asset: ProjectAsset, filename: string): Html5AssetDescriptor {
+  return {
+    filename,
+    classification: asset.classification,
+    frame: asset.frame,
+    persistent: asset.persistent,
+    layer_bounds: asset.layer_bounds,
+    text_content: asset.text_content,
+    opacity: asset.opacity,
+    blend_mode: asset.blend_mode,
+  };
+}
+
+/** Assets utilizables por el HTML5: no descartados y ya aplanados a PNG (con filename asignado), ordenados por z_index. */
+function usableAssetDescriptors(assets: ProjectAsset[]): Html5AssetDescriptor[] {
+  return assets
+    .filter((a) => !a.discarded)
+    .sort((a, b) => (a.z_index ?? 0) - (b.z_index ?? 0))
+    .flatMap((a) => {
+      const filename = assetFilename(a);
+      return filename ? [toAssetDescriptor(a, filename)] : [];
+    });
+}
+
+/** Quita el fence ```html ... ``` si Claude lo añade a pesar de la instrucción de no hacerlo. */
+function stripCodeFence(text: string): string {
+  const trimmed = text.trim();
+  const fenced = trimmed.match(/^```(?:html)?\s*([\s\S]*?)\s*```$/i);
+  return (fenced ? fenced[1] : trimmed).trim();
 }
 
 /**
- * Genera el HTML5 animado como string — autocontenido (assets embebidos en
- * base64, el peso de la propia plantilla sin contar esos assets se mantiene
- * muy por debajo del límite IAB LEAN de 150KB), con GSAP cargado desde CDN y
- * un `<noscript>` con el JPG de respaldo. No renderiza nada (no hay
- * Puppeteer ni ningún motor headless implicado) — es puro string building.
+ * Genera el HTML5 de producción de un banner llamando a Claude UNA SOLA VEZ por
+ * proyecto (el master). Las adaptaciones a otros formatos reutilizan este mismo
+ * HTML vía `adaptHtml5ToFormat`, sin volver a llamar a Claude — ver
+ * trigger/render-master.ts y trigger/render-adaptations.ts.
  */
-export function generateHtml5(params: Html5BannerParams): string {
-  const {
-    width,
-    height,
-    backgroundColor,
-    backgroundImageBase64,
-    logoBase64,
-    logoAspectRatio,
-    mainImageBase64,
-    claim,
-    subclaim,
-    cta,
-    disclaimer,
-    fontFamily,
-    googleFontImportUrl,
-    fallbackJpgBase64,
-  } = params;
+export async function generateHtml5Master(
+  projectId: string,
+  masterFormat: Html5FormatSpec,
+  assets: ProjectAsset[],
+  animationGuide: string | null,
+  clickTagUrl: string,
+  supabase: SupabaseClient,
+): Promise<{ html: string; assetFilenames: string[] }> {
+  void projectId;
+  void supabase;
 
-  const layout = computeBannerLayout({ width, height, hasLogo: !!logoBase64, logoAspectRatio });
+  const descriptors = usableAssetDescriptors(assets);
 
-  const backgroundSrc = imgSrc(backgroundImageBase64);
-  const mainImageSrc = imgSrc(mainImageBase64);
-  const logoSrc = imgSrc(logoBase64);
+  const userMessage = [
+    `Canvas: ${masterFormat.width}x${masterFormat.height}px`,
+    `Assets ordenados por z_index (JSON):`,
+    JSON.stringify(descriptors, null, 2),
+    `Guía de animación: ${
+      animationGuide?.trim() ||
+      "No hay guía — infiere animación profesional del orden de frames y clasificación de capas"
+    }`,
+    `clickTag: ${clickTagUrl}`,
+  ].join("\n\n");
 
-  const mainImageTop = Math.round((height - layout.mainImageBoxHeightPx) / 2);
-  const mainImageLeft = Math.round((width - layout.mainImageBoxWidthPx) / 2);
+  const client = createClaudeClient();
+  const response = await client.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 8000,
+    system: SYSTEM_PROMPT,
+    messages: [{ role: "user", content: userMessage }],
+  });
 
-  return `<!doctype html>
-<html>
-<head>
-<meta charset="utf-8" />
-<style>@import url('${googleFontImportUrl}');</style>
-<style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body { width: ${width}px; height: ${height}px; overflow: hidden; }
-  .canvas {
-    position: relative;
-    width: ${width}px;
-    height: ${height}px;
-    background-color: ${backgroundColor};
-    font-family: Arial, Helvetica, sans-serif;
-  }
-  .background {
-    position: absolute; inset: 0; width: 100%; height: 100%;
-    object-fit: cover; opacity: 0;
-  }
-  .main-image {
-    position: absolute;
-    top: ${mainImageTop}px;
-    left: ${mainImageLeft}px;
-    width: ${layout.mainImageBoxWidthPx}px;
-    height: ${layout.mainImageBoxHeightPx}px;
-    object-fit: contain;
-    opacity: 0;
-  }
-  .logo {
-    position: absolute;
-    top: ${layout.safeZonePx}px;
-    left: ${layout.safeZonePx}px;
-    width: ${layout.logoWidthPx}px;
-    height: ${layout.logoHeightPx}px;
-    object-fit: contain;
-  }
-  .claim {
-    position: absolute;
-    top: ${layout.claimTopPx}px;
-    left: ${layout.safeZonePx}px;
-    right: ${layout.safeZonePx}px;
-    font-family: "${fontFamily}", Arial, Helvetica, sans-serif;
-    font-weight: bold;
-    font-size: ${layout.claimFontSizePx}px;
-    line-height: 1.1;
-    color: #111111;
-    text-shadow: 0 1px 3px rgba(255,255,255,0.6);
-    opacity: 0;
-    transform: translateY(20px);
-  }
-  .subclaim {
-    position: absolute;
-    top: ${layout.subclaimTopPx}px;
-    left: ${layout.safeZonePx}px;
-    right: ${layout.safeZonePx}px;
-    font-family: "${fontFamily}", Arial, Helvetica, sans-serif;
-    font-weight: normal;
-    font-size: ${layout.subclaimFontSizePx}px;
-    color: #333333;
-    opacity: 0;
-  }
-  .cta {
-    position: absolute;
-    bottom: ${layout.safeZonePx}px;
-    right: ${layout.safeZonePx}px;
-    background: #000000;
-    color: #FFFFFF;
-    font-family: "${fontFamily}", Arial, Helvetica, sans-serif;
-    font-weight: bold;
-    font-size: ${layout.ctaFontSizePx}px;
-    height: ${layout.ctaHeightPx}px;
-    line-height: ${layout.ctaHeightPx}px;
-    padding: 0 ${layout.ctaPaddingHorizontalPx}px;
-    border-radius: 4px;
-    white-space: nowrap;
-    opacity: 0;
-    transform: scale(0.8);
-  }
-  .disclaimer {
-    position: absolute;
-    bottom: ${layout.safeZonePx}px;
-    left: ${layout.safeZonePx}px;
-    max-width: 55%;
-    font-size: ${layout.disclaimerFontSizePx}px;
-    color: #555555;
-  }
-  noscript img { display: block; width: ${width}px; height: ${height}px; }
-</style>
-</head>
-<body>
-  <noscript>
-    <img src="data:image/jpeg;base64,${fallbackJpgBase64}" width="${width}" height="${height}" alt="" />
-  </noscript>
-  <div class="canvas">
-    ${backgroundSrc ? `<img class="background" src="${backgroundSrc}" alt="" />` : ""}
-    ${mainImageSrc ? `<img class="main-image" src="${mainImageSrc}" alt="" />` : ""}
-    ${logoSrc ? `<img class="logo" src="${logoSrc}" alt="" />` : ""}
-    ${claim ? `<div class="claim">${escapeHtml(claim)}</div>` : ""}
-    ${subclaim ? `<div class="subclaim">${escapeHtml(subclaim)}</div>` : ""}
-    ${cta ? `<div class="cta">${escapeHtml(cta)}</div>` : ""}
-    ${disclaimer ? `<div class="disclaimer">${escapeHtml(disclaimer)}</div>` : ""}
-  </div>
-  <script src="${GSAP_CDN_URL}"></script>
-  <script>${buildGsapAnimationScript()}</script>
-</body>
-</html>`;
+  const textBlock = response.content.find((block) => block.type === "text");
+  const raw = textBlock && textBlock.type === "text" ? textBlock.text : "";
+
+  return { html: stripCodeFence(raw), assetFilenames: descriptors.map((d) => d.filename) };
+}
+
+/**
+ * Adapta el HTML5 master a otro formato IAB sin volver a llamar a Claude:
+ * solo reemplaza las dimensiones del `#ad` y el meta `ad.size`. Los PNGs
+ * referenciados son los mismos del master (se resolverá el escalado por
+ * formato en una iteración posterior).
+ */
+export function adaptHtml5ToFormat(masterHtml: string, targetFormat: Html5FormatSpec): string {
+  let html = masterHtml.replace(/(#ad\s*\{)([^}]*)(\})/i, (_match, open: string, body: string, close: string) => {
+    const updatedBody = body
+      .replace(/width\s*:\s*\d+px/i, `width: ${targetFormat.width}px`)
+      .replace(/height\s*:\s*\d+px/i, `height: ${targetFormat.height}px`);
+    return `${open}${updatedBody}${close}`;
+  });
+
+  html = html.replace(/<meta([^>]*name=["']ad\.size["'][^>]*)>/i, (_match, attrs: string) => {
+    const updatedAttrs = attrs
+      .replace(/width=\d+/i, `width=${targetFormat.width}`)
+      .replace(/height=\d+/i, `height=${targetFormat.height}`);
+    return `<meta${updatedAttrs}>`;
+  });
+
+  return html;
 }

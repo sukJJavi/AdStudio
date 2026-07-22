@@ -31,6 +31,10 @@ create table if not exists adstudio_projects (
   -- font_secondary queda reservada (no usada todavía) para un futuro par claim/subclaim.
   font_primary text not null default 'Inter',
   font_secondary text default null,
+  -- Bloque 5: HTML5 del master generado una única vez por Claude
+  -- (lib/render/html5-generator.ts); las adaptaciones lo reutilizan vía
+  -- adaptHtml5ToFormat() sin volver a llamar a Claude.
+  master_html text default null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -42,6 +46,7 @@ alter table adstudio_projects add column if not exists font_primary text default
 alter table adstudio_projects add column if not exists font_secondary text default null;
 update adstudio_projects set font_primary = 'Inter' where font_primary is null;
 alter table adstudio_projects alter column font_primary set not null;
+alter table adstudio_projects add column if not exists master_html text default null;
 
 create table if not exists adstudio_formats (
   id uuid primary key default gen_random_uuid(),

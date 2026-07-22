@@ -96,6 +96,65 @@ function resolutionFactor(width: number, height: number, formatoMaxArea: number 
   return Math.min(1, (width * height) / formatoMaxArea);
 }
 
+/**
+ * Nombres reservados para clasificaciones persistentes (presentes en todos los
+ * frames) — usados por el HTML5 generado por Claude (ver lib/render/html5-generator.ts)
+ * para referenciar assets por rol sin depender del frame.
+ */
+const PERSISTENT_FILENAMES: Partial<Record<string, string>> = {
+  fondo: "background",
+  logo: "logo",
+  cta: "cta",
+  disclaimer: "legal",
+};
+
+function sanitizeFilenameBase(name: string): string {
+  const sanitized = name
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_")
+    .replace(/[^a-z0-9_-]/g, "");
+  return sanitized || "layer";
+}
+
+/**
+ * Nombre base (sin ".png" ni índice de desambiguación) del PNG exportado de una
+ * capa, según su clasificación/frame — ver Bloque HTML5 en CLAUDE.md:
+ * - persistente con rol reservado (fondo/logo/cta/disclaimer) -> nombre fijo
+ * - con frame -> `f{N}_{classification}`
+ * - "desconocido" -> nombre original de la capa del PSD, saneado
+ * - resto (persistente sin rol reservado, o sin frame ni persistent) -> classification tal cual
+ */
+function baseFilenameFor(params: {
+  classification: string;
+  frame: number | null;
+  persistent: boolean;
+  layerName: string;
+}): string {
+  const { classification, frame, persistent, layerName } = params;
+
+  if (classification === "desconocido") {
+    return sanitizeFilenameBase(layerName);
+  }
+
+  if (persistent) {
+    return PERSISTENT_FILENAMES[classification] ?? classification;
+  }
+
+  if (frame != null) {
+    return `f${frame}_${classification}`;
+  }
+
+  return classification;
+}
+
+/** Añade índice de desambiguación (`_2`, `_3`, ...) si el nombre base ya se usó en el proyecto. */
+function uniqueFilename(base: string, usedCounts: Map<string, number>): string {
+  const count = (usedCounts.get(base) ?? 0) + 1;
+  usedCounts.set(base, count);
+  return count === 1 ? `${base}.png` : `${base}_${count}.png`;
+}
+
 export const analyzePsd = task({
   id: "analyze-psd",
   run: async (payload: AnalyzePsdPayload) => {
@@ -124,6 +183,9 @@ export const analyzePsd = task({
 
     let layersExtracted = 0;
     let layersClassified = 0;
+    // Único por proyecto (no por PSD): dos PSDs subidos al mismo proyecto comparten
+    // carpeta de Storage `{project_id}/layers/`, así que sus nombres no pueden chocar.
+    const usedFilenames = new Map<string, number>();
 
     for (const psdAsset of psdAssets ?? []) {
       if (!psdAsset.file_path) continue;
@@ -167,7 +229,7 @@ export const analyzePsd = task({
 
       console.log("Capas encontradas tras flatten:", flattened.length);
 
-      const insertedRows: { id: string; layer: Layer }[] = [];
+      const insertedRows: { id: string; layer: Layer; frame: number | null; persistent: boolean }[] = [];
 
       for (let z = 0; z < flattened.length; z++) {
         const { layer, frame, persistent } = flattened[z];
@@ -235,7 +297,7 @@ export const analyzePsd = task({
         if (!insertError && inserted) {
           layersExtracted += 1;
           // Las capas ocultas no se aplanan a PNG ni se clasifican con Claude Vision.
-          if (!hidden) insertedRows.push({ id: inserted.id as string, layer });
+          if (!hidden) insertedRows.push({ id: inserted.id as string, layer, frame, persistent });
         }
       }
 
@@ -245,7 +307,7 @@ export const analyzePsd = task({
       const flattenable = insertedRows.filter(({ layer }) => layer.imageData);
 
       for (let i = 0; i < flattenable.length; i++) {
-        const { id: assetId, layer } = flattenable[i];
+        const { id: assetId, layer, frame, persistent } = flattenable[i];
         const imageData = layer.imageData!;
 
         metadata.set("step", "clasificando-con-claude");
@@ -263,15 +325,20 @@ export const analyzePsd = task({
           .png()
           .toBuffer();
 
-        const storagePath = `${payload.projectId}/layers/${assetId}.png`;
-        const { error: uploadError } = await supabase.storage
-          .from("adstudio-projects")
-          .upload(storagePath, pngBuffer, { contentType: "image/png", upsert: true });
-
         // Las capas de texto no pasan por Claude Vision: ya tenemos su fuente,
         // tamaño y contenido real extraídos directamente del PSD.
         const textMetadata = extractTextMetadata(layer);
         const classification = textMetadata ? "texto" : await classifyLayerImage(pngBuffer);
+
+        const filename = uniqueFilename(
+          baseFilenameFor({ classification, frame, persistent, layerName: layer.name ?? "capa" }),
+          usedFilenames,
+        );
+
+        const storagePath = `${payload.projectId}/layers/${filename}`;
+        const { error: uploadError } = await supabase.storage
+          .from("adstudio-projects")
+          .upload(storagePath, pngBuffer, { contentType: "image/png", upsert: true });
 
         const width = imageData.width;
         const height = imageData.height;
@@ -287,7 +354,7 @@ export const analyzePsd = task({
             height,
             dpi,
             file_path: uploadError ? null : storagePath,
-            metadata: textMetadata ?? {},
+            metadata: { ...(textMetadata ?? {}), filename },
             status: "processed",
           })
           .eq("id", assetId);

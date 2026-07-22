@@ -121,3 +121,11 @@ alter table adstudio_assets
   add column if not exists text_content text default null,
   add column if not exists layer_bounds jsonb default null;
   -- layer_bounds: { x, y, width, height } en píxeles relativos al canvas
+
+-- =========================================================
+-- Bloque 5 — HTML5 generado por agente (Claude) y cacheado
+-- =========================================================
+
+-- HTML5 del master generado una única vez por Claude (lib/render/html5-generator.ts);
+-- las adaptaciones lo reutilizan vía adaptHtml5ToFormat() sin volver a llamar a Claude.
+alter table adstudio_projects add column if not exists master_html text default null;

@@ -2,12 +2,13 @@ import { task, metadata } from "@trigger.dev/sdk/v3";
 import { createTriggerSupabaseClient } from "@/lib/supabase/trigger-client";
 import { getIABFormatById, type IABFormat } from "@/lib/iab/specs";
 import { unblockedFormats } from "@/lib/iab/incident-analyzer";
-import { fontFamilyStack, googleFontUrl } from "@/lib/fonts";
+import { fontFamilyStack } from "@/lib/fonts";
 import { splitCopy } from "@/lib/render/copy";
 import { downloadAsset, selectClassifiedAssets } from "@/lib/render/assets";
 import { loadGoogleFont } from "@/lib/render/font-loader";
 import { renderBannerToJpg } from "@/lib/render/jpg-renderer";
-import { generateHtml5 } from "@/lib/render/html5-generator";
+import { adaptHtml5ToFormat } from "@/lib/render/html5-generator";
+import { getHtml5Master } from "@/lib/render/html5-cache";
 import {
   buildManifestJson,
   buildZipBuffer,
@@ -16,7 +17,7 @@ import {
   type ManifestPieceEntry,
   type ZipFileEntry,
 } from "@/lib/export/zip";
-import type { ProjectFormat } from "@/lib/types";
+import type { ProjectAsset, ProjectFormat, TextLayerMetadata } from "@/lib/types";
 
 type RenderAdaptationsPayload = {
   projectId: string;
@@ -26,7 +27,13 @@ function toBase64(buffer: Buffer | null): string | undefined {
   return buffer ? buffer.toString("base64") : undefined;
 }
 
-async function renderPiece(params: {
+/** `adstudio_assets.metadata.filename` — nombre de fichero asignado en trigger/analyze-psd.ts. */
+function assetFilename(asset: ProjectAsset): string | null {
+  const filename = (asset.metadata as TextLayerMetadata | undefined)?.filename;
+  return typeof filename === "string" && filename.trim() ? filename : null;
+}
+
+async function renderFallbackJpg(params: {
   format: ProjectFormat;
   spec: IABFormat;
   fondoBase64: string | undefined;
@@ -34,10 +41,9 @@ async function renderPiece(params: {
   logoBase64: string | undefined;
   logoAspectRatio: number | null;
   fontFamily: string;
-  fontImportUrl: string;
   fontRegularBase64: string;
   fontBoldBase64: string;
-}): Promise<{ animatedHtml: string; fallbackJpg: Buffer }> {
+}): Promise<Buffer> {
   const {
     format,
     spec,
@@ -46,14 +52,13 @@ async function renderPiece(params: {
     logoBase64,
     logoAspectRatio,
     fontFamily,
-    fontImportUrl,
     fontRegularBase64,
     fontBoldBase64,
   } = params;
 
   const { claim, subclaim, disclaimer } = splitCopy(format.copy ?? null);
 
-  const fallbackJpg = await renderBannerToJpg({
+  return renderBannerToJpg({
     width: spec.ancho,
     height: spec.alto,
     backgroundColor: "#FFFFFF",
@@ -69,25 +74,6 @@ async function renderPiece(params: {
     fontBase64: fontRegularBase64,
     fontBoldBase64,
   });
-
-  const animatedHtml = generateHtml5({
-    width: spec.ancho,
-    height: spec.alto,
-    backgroundColor: "#FFFFFF",
-    backgroundImageBase64: fondoBase64 ?? null,
-    mainImageBase64: imagenPrincipalBase64 ?? null,
-    logoBase64: logoBase64 ?? null,
-    logoAspectRatio,
-    claim,
-    subclaim,
-    cta: claim,
-    disclaimer,
-    fontFamily,
-    googleFontImportUrl: fontImportUrl,
-    fallbackJpgBase64: fallbackJpg.toString("base64"),
-  });
-
-  return { animatedHtml, fallbackJpg };
 }
 
 export const renderAdaptations = task({
@@ -112,6 +98,11 @@ export const renderAdaptations = task({
       throw new Error("Proyecto no encontrado.");
     }
 
+    const masterHtml = await getHtml5Master(payload.projectId, supabase);
+    if (!masterHtml) {
+      throw new Error("No hay HTML5 de master generado. Genera el master antes de producir adaptaciones.");
+    }
+
     const formatsToProduce = unblockedFormats((allFormats ?? []) as ProjectFormat[])
       .map((format) => ({ format, spec: getIABFormatById(format.iab_format) }))
       .filter((x): x is { format: ProjectFormat; spec: IABFormat } => x.spec != null);
@@ -120,7 +111,8 @@ export const renderAdaptations = task({
       throw new Error("No hay formatos disponibles para producir (todos bloqueados o sin especificación IAB).");
     }
 
-    const { byClassification } = selectClassifiedAssets(assets ?? []);
+    const allAssets = (assets ?? []) as ProjectAsset[];
+    const { byClassification } = selectClassifiedAssets(allAssets);
     const fondoAsset = byClassification("fondo");
     const imagenPrincipalAsset = byClassification("imagen_principal");
     const logoAsset = byClassification("logo");
@@ -148,7 +140,23 @@ export const renderAdaptations = task({
       logoAsset?.width && logoAsset?.height && logoAsset.height > 0 ? logoAsset.width / logoAsset.height : null;
 
     const fontFamily = fontFamilyStack(fontPrimary);
-    const fontImportUrl = googleFontUrl(fontPrimary);
+
+    // Los PNGs del master (por ahora, sin escalado por formato — ver adaptHtml5ToFormat)
+    // se descargan una única vez y se reutilizan en el ZIP de cada formato.
+    const masterPngEntries = (
+      await Promise.all(
+        allAssets
+          .filter((a) => !a.discarded)
+          .flatMap((a) => {
+            const filename = assetFilename(a);
+            return filename && a.file_path ? [{ filename, filePath: a.file_path }] : [];
+          })
+          .map(async ({ filename, filePath }) => {
+            const buffer = await downloadAsset(supabase, filePath);
+            return buffer ? { filename, buffer } : null;
+          }),
+      )
+    ).filter((entry): entry is { filename: string; buffer: Buffer } => entry != null);
 
     const zipEntries: ZipFileEntry[] = [];
     const manifestPieces: ManifestPieceEntry[] = [];
@@ -167,7 +175,13 @@ export const renderAdaptations = task({
       await supabase.from("adstudio_formats").update({ status: "producing" }).eq("id", format.id);
 
       try {
-        const { animatedHtml, fallbackJpg } = await renderPiece({
+        const adaptedHtml = adaptHtml5ToFormat(masterHtml, {
+          width: spec.ancho,
+          height: spec.alto,
+          iabFormat: format.iab_format,
+        });
+
+        const fallbackJpg = await renderFallbackJpg({
           format,
           spec,
           fondoBase64,
@@ -175,7 +189,6 @@ export const renderAdaptations = task({
           logoBase64,
           logoAspectRatio,
           fontFamily,
-          fontImportUrl,
           fontRegularBase64,
           fontBoldBase64,
         });
@@ -185,7 +198,7 @@ export const renderAdaptations = task({
         await Promise.all([
           supabase.storage
             .from("adstudio-projects")
-            .upload(`${basePath}/index.html`, animatedHtml, { contentType: "text/html", upsert: true }),
+            .upload(`${basePath}/index.html`, adaptedHtml, { contentType: "text/html", upsert: true }),
           supabase.storage
             .from("adstudio-projects")
             .upload(`${basePath}/fallback.jpg`, fallbackJpg, { contentType: "image/jpeg", upsert: true }),
@@ -194,7 +207,10 @@ export const renderAdaptations = task({
         await supabase.from("adstudio_formats").update({ status: "ready" }).eq("id", format.id);
 
         const pieceFolder = `${sanitizePathSegment(format.nombre_soporte)}_${format.iab_format}`;
-        zipEntries.push({ path: `${pieceFolder}/index.html`, content: animatedHtml });
+        zipEntries.push({ path: `${pieceFolder}/index.html`, content: adaptedHtml });
+        for (const png of masterPngEntries) {
+          zipEntries.push({ path: `${pieceFolder}/${png.filename}`, content: png.buffer });
+        }
         zipEntries.push({ path: `${pieceFolder}/fallback.jpg`, content: fallbackJpg });
 
         manifestPieces.push({
@@ -203,7 +219,7 @@ export const renderAdaptations = task({
           width: spec.ancho,
           height: spec.alto,
           jpgSizeBytes: fallbackJpg.byteLength,
-          htmlSizeBytes: Buffer.byteLength(animatedHtml, "utf8"),
+          htmlSizeBytes: Buffer.byteLength(adaptedHtml, "utf8"),
           incidencias: format.incidencias ?? [],
         });
 
