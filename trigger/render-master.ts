@@ -5,7 +5,8 @@ import { fontFamilyStack } from "@/lib/fonts";
 import { splitCopy } from "@/lib/render/copy";
 import { pickLargestBy, selectClassifiedAssets, downloadAsset } from "@/lib/render/assets";
 import { loadGoogleFont } from "@/lib/render/font-loader";
-import { renderBannerToJpg, renderBannerToPng } from "@/lib/render/jpg-renderer";
+import { renderBannerToPng } from "@/lib/render/jpg-renderer";
+import { renderFallbackFromFrame } from "@/lib/render/fallback-composite";
 import { generateHtml5Master } from "@/lib/render/html5-generator";
 import { saveHtml5Master } from "@/lib/render/html5-cache";
 import { readAnimationGuideText } from "@/lib/render/animation-guide";
@@ -108,7 +109,9 @@ export const renderMaster = task({
     metadata.set("progress", 0.45);
 
     const [jpgBuffer, pngBuffer] = await Promise.all([
-      renderBannerToJpg(bannerElements),
+      // Fix 2: el fallback.jpg se compone con las capas reales del último frame
+      // que contiene el CTA (+ persistentes), no un render de Satori desde cero.
+      renderFallbackFromFrame({ assets: allAssets, width: spec.ancho, height: spec.alto, supabase }),
       renderBannerToPng(bannerElements),
     ]);
 
@@ -160,6 +163,7 @@ export const renderMaster = task({
     metadata.set("progress", 0.9);
 
     const basePath = `${payload.projectId}/master/${format.iab_format}`;
+    const masterFolder = `${payload.projectId}/master`;
 
     await Promise.all([
       supabase.storage
@@ -171,9 +175,23 @@ export const renderMaster = task({
       supabase.storage
         .from("adstudio-projects")
         .upload(`${basePath}.html`, html, { contentType: "text/html", upsert: true }),
+      // Ruta estable (independiente del iab_format elegido como master) para el
+      // preview en iframe de app/project/[id]/master — junto a las mismas capas
+      // PNG/JPG que referencia por filename relativo, para que cargue sin roturas.
       supabase.storage
         .from("adstudio-projects")
-        .upload(`${payload.projectId}/master/master.zip`, zipBuffer, {
+        .upload(`${masterFolder}/index.html`, html, { contentType: "text/html", upsert: true }),
+      ...pngEntries.map((entry) =>
+        supabase.storage
+          .from("adstudio-projects")
+          .upload(`${masterFolder}/${entry.filename}`, entry.buffer, {
+            contentType: entry.filename.toLowerCase().endsWith(".jpg") ? "image/jpeg" : "image/png",
+            upsert: true,
+          }),
+      ),
+      supabase.storage
+        .from("adstudio-projects")
+        .upload(`${masterFolder}/master.zip`, zipBuffer, {
           contentType: "application/zip",
           upsert: true,
         }),

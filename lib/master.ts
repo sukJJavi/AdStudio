@@ -5,6 +5,8 @@ import { unblockedFormats } from "@/lib/iab/incident-analyzer";
 import type { MasterRecord, Project, ProjectFormat } from "@/lib/types";
 
 const SIGNED_URL_TTL_SECONDS = 600;
+/** Preview del HTML5 del master en iframe — ver components/project/master-view.tsx. */
+const HTML5_SIGNED_URL_TTL_SECONDS = 60 * 60;
 
 /** Ordena los formatos del proyecto por área de canvas descendente, descartando IDs IAB desconocidos. */
 export function rankFormatsByArea(
@@ -100,6 +102,10 @@ export type MasterStatusResponse = {
   step: string | null;
   progress: number | null;
   masters: MasterWithUrls[];
+  /** Signed URL de `{project_id}/master/index.html` (el HTML5 generado por Claude) para el iframe de preview. */
+  html5Url: string | null;
+  /** Peso de `{project_id}/master/master.zip`, para mostrar junto al preview. */
+  zipSizeBytes: number | null;
 };
 
 export async function getMasterStatus(projectId: string): Promise<MasterStatusResponse | null> {
@@ -154,5 +160,17 @@ export async function getMasterStatus(projectId: string): Promise<MasterStatusRe
     }
   }
 
-  return { projectStatus: project.status, step, progress, masters };
+  const { data: masterFolderList } = await supabase.storage.from("adstudio-projects").list(`${projectId}/master`);
+
+  let html5Url: string | null = null;
+  if (masterFolderList?.some((f) => f.name === "index.html")) {
+    const { data: signed } = await supabase.storage
+      .from("adstudio-projects")
+      .createSignedUrl(`${projectId}/master/index.html`, HTML5_SIGNED_URL_TTL_SECONDS);
+    html5Url = signed?.signedUrl ?? null;
+  }
+
+  const zipSizeBytes = masterFolderList?.find((f) => f.name === "master.zip")?.metadata?.size ?? null;
+
+  return { projectStatus: project.status, step, progress, masters, html5Url, zipSizeBytes };
 }

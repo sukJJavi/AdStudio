@@ -188,15 +188,43 @@ export function MasterView({
               <CardTitle>Master</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="max-h-[70vh] overflow-auto rounded-md border border-border">
-                {primaryMaster.jpgUrl && (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img src={primaryMaster.jpgUrl} alt="Preview del master" className="block" />
-                )}
-              </div>
+              {status.html5Url ? (
+                <div className="flex flex-wrap items-start gap-4">
+                  <div className="max-h-[70vh] max-w-full overflow-auto rounded-md border border-border">
+                    <iframe
+                      src={status.html5Url}
+                      width={primaryMaster.width}
+                      height={primaryMaster.height}
+                      style={{ border: 0, display: "block" }}
+                      title="Preview del master (HTML5)"
+                    />
+                  </div>
+                  {primaryMaster.jpgUrl && (
+                    <div className="flex flex-col items-start gap-1">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={primaryMaster.jpgUrl}
+                        alt="Fallback JPG del master"
+                        className="w-32 rounded-md border border-border"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        JPG alternativo
+                        {primaryMaster.jpgSizeBytes != null ? ` (${formatBytes(primaryMaster.jpgSizeBytes)})` : ""}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="max-h-[70vh] overflow-auto rounded-md border border-border">
+                  {primaryMaster.jpgUrl && (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img src={primaryMaster.jpgUrl} alt="Preview del master" className="block" />
+                  )}
+                </div>
+              )}
               <p className="text-sm text-muted-foreground">
                 {primaryMaster.width}×{primaryMaster.height}px
-                {primaryMaster.jpgSizeBytes != null ? ` · ${formatBytes(primaryMaster.jpgSizeBytes)}` : ""}
+                {status.zipSizeBytes != null ? ` · ZIP ${formatBytes(status.zipSizeBytes)}` : ""}
               </p>
 
               <div className="flex flex-wrap items-center gap-3">

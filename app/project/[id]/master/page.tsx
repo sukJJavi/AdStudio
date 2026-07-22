@@ -52,7 +52,14 @@ export default async function MasterPage({
         cliente={project.cliente}
         producto={project.producto}
         initialStatus={
-          masterStatus ?? { projectStatus: project.status, step: null, progress: null, masters: [] }
+          masterStatus ?? {
+            projectStatus: project.status,
+            step: null,
+            progress: null,
+            masters: [],
+            html5Url: null,
+            zipSizeBytes: null,
+          }
         }
         formatsSummary={{ ready: unblocked.length, blocked: formats.length - unblocked.length }}
         hasUnblockedFormat={unblocked.length > 0}

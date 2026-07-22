@@ -2,13 +2,10 @@ import { task, metadata } from "@trigger.dev/sdk/v3";
 import { createTriggerSupabaseClient } from "@/lib/supabase/trigger-client";
 import { getIABFormatById, type IABFormat } from "@/lib/iab/specs";
 import { unblockedFormats } from "@/lib/iab/incident-analyzer";
-import { fontFamilyStack } from "@/lib/fonts";
-import { splitCopy } from "@/lib/render/copy";
-import { downloadAsset, selectClassifiedAssets } from "@/lib/render/assets";
-import { loadGoogleFont } from "@/lib/render/font-loader";
-import { renderBannerToJpg } from "@/lib/render/jpg-renderer";
+import { downloadAsset } from "@/lib/render/assets";
 import { adaptHtml5ToFormat } from "@/lib/render/html5-generator";
 import { getHtml5Master } from "@/lib/render/html5-cache";
+import { renderFallbackFromFrame } from "@/lib/render/fallback-composite";
 import {
   buildManifestJson,
   buildZipBuffer,
@@ -23,57 +20,10 @@ type RenderAdaptationsPayload = {
   projectId: string;
 };
 
-function toBase64(buffer: Buffer | null): string | undefined {
-  return buffer ? buffer.toString("base64") : undefined;
-}
-
 /** `adstudio_assets.metadata.filename` — nombre de fichero asignado en trigger/analyze-psd.ts. */
 function assetFilename(asset: ProjectAsset): string | null {
   const filename = (asset.metadata as TextLayerMetadata | undefined)?.filename;
   return typeof filename === "string" && filename.trim() ? filename : null;
-}
-
-async function renderFallbackJpg(params: {
-  format: ProjectFormat;
-  spec: IABFormat;
-  fondoBase64: string | undefined;
-  imagenPrincipalBase64: string | undefined;
-  logoBase64: string | undefined;
-  logoAspectRatio: number | null;
-  fontFamily: string;
-  fontRegularBase64: string;
-  fontBoldBase64: string;
-}): Promise<Buffer> {
-  const {
-    format,
-    spec,
-    fondoBase64,
-    imagenPrincipalBase64,
-    logoBase64,
-    logoAspectRatio,
-    fontFamily,
-    fontRegularBase64,
-    fontBoldBase64,
-  } = params;
-
-  const { claim, subclaim, disclaimer } = splitCopy(format.copy ?? null);
-
-  return renderBannerToJpg({
-    width: spec.ancho,
-    height: spec.alto,
-    backgroundColor: "#FFFFFF",
-    backgroundImageBase64: fondoBase64,
-    mainImageBase64: imagenPrincipalBase64,
-    logoBase64,
-    logoAspectRatio,
-    claim,
-    subclaim,
-    cta: claim,
-    disclaimer,
-    fontFamily,
-    fontBase64: fontRegularBase64,
-    fontBoldBase64,
-  });
 }
 
 export const renderAdaptations = task({
@@ -87,11 +37,7 @@ export const renderAdaptations = task({
     const [{ data: allFormats }, { data: assets }, { data: project }] = await Promise.all([
       supabase.from("adstudio_formats").select("*").eq("project_id", payload.projectId),
       supabase.from("adstudio_assets").select("*").eq("project_id", payload.projectId),
-      supabase
-        .from("adstudio_projects")
-        .select("cliente, producto, font_primary")
-        .eq("id", payload.projectId)
-        .single(),
+      supabase.from("adstudio_projects").select("cliente, producto").eq("id", payload.projectId).single(),
     ]);
 
     if (!project) {
@@ -112,34 +58,9 @@ export const renderAdaptations = task({
     }
 
     const allAssets = (assets ?? []) as ProjectAsset[];
-    const { byClassification } = selectClassifiedAssets(allAssets);
-    const fondoAsset = byClassification("fondo");
-    const imagenPrincipalAsset = byClassification("imagen_principal");
-    const logoAsset = byClassification("logo");
 
-    metadata.set("step", "descargando-assets-y-fuente");
+    metadata.set("step", "descargando-pngs-del-master");
     metadata.set("progress", 0.05);
-
-    const fontPrimary = project.font_primary ?? "Inter";
-
-    const [fondoBuffer, imagenPrincipalBuffer, logoBuffer, fontRegularBuffer, fontBoldBuffer] = await Promise.all([
-      downloadAsset(supabase, fondoAsset?.file_path ?? null),
-      downloadAsset(supabase, imagenPrincipalAsset?.file_path ?? null),
-      downloadAsset(supabase, logoAsset?.file_path ?? null),
-      loadGoogleFont(fontPrimary, 400),
-      loadGoogleFont(fontPrimary, 700),
-    ]);
-
-    const fondoBase64 = toBase64(fondoBuffer);
-    const imagenPrincipalBase64 = toBase64(imagenPrincipalBuffer);
-    const logoBase64 = toBase64(logoBuffer);
-    const fontRegularBase64 = fontRegularBuffer.toString("base64");
-    const fontBoldBase64 = fontBoldBuffer.toString("base64");
-
-    const logoAspectRatio =
-      logoAsset?.width && logoAsset?.height && logoAsset.height > 0 ? logoAsset.width / logoAsset.height : null;
-
-    const fontFamily = fontFamilyStack(fontPrimary);
 
     // Los PNGs del master (por ahora, sin escalado por formato — ver adaptHtml5ToFormat)
     // se descargan una única vez y se reutilizan en el ZIP de cada formato.
@@ -181,16 +102,13 @@ export const renderAdaptations = task({
           iabFormat: format.iab_format,
         });
 
-        const fallbackJpg = await renderFallbackJpg({
-          format,
-          spec,
-          fondoBase64,
-          imagenPrincipalBase64,
-          logoBase64,
-          logoAspectRatio,
-          fontFamily,
-          fontRegularBase64,
-          fontBoldBase64,
+        // Fix 2: el fallback.jpg se compone con las capas reales del último frame
+        // que contiene el CTA (+ persistentes), no un render de Satori desde cero.
+        const fallbackJpg = await renderFallbackFromFrame({
+          assets: allAssets,
+          width: spec.ancho,
+          height: spec.alto,
+          supabase,
         });
 
         const basePath = `${payload.projectId}/adaptations/${format.iab_format}`;

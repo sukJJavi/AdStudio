@@ -149,10 +149,10 @@ function baseFilenameFor(params: {
 }
 
 /** Añade índice de desambiguación (`_2`, `_3`, ...) si el nombre base ya se usó en el proyecto. */
-function uniqueFilename(base: string, usedCounts: Map<string, number>): string {
+function uniqueFilename(base: string, usedCounts: Map<string, number>, ext: "png" | "jpg" = "png"): string {
   const count = (usedCounts.get(base) ?? 0) + 1;
   usedCounts.set(base, count);
-  return count === 1 ? `${base}.png` : `${base}_${count}.png`;
+  return count === 1 ? `${base}.${ext}` : `${base}_${count}.${ext}`;
 }
 
 export const analyzePsd = task({
@@ -186,6 +186,11 @@ export const analyzePsd = task({
     // Único por proyecto (no por PSD): dos PSDs subidos al mismo proyecto comparten
     // carpeta de Storage `{project_id}/layers/`, así que sus nombres no pueden chocar.
     const usedFilenames = new Map<string, number>();
+
+    type InsertedRow = { id: string; layer: Layer; frame: number | null; persistent: boolean; dpi: number | null };
+    // Combinado entre todos los PSDs del proyecto: "la capa de mayor área del proyecto"
+    // (fix 1 de fondo-como-JPG) se calcula sobre el total, no por archivo.
+    const allInsertedRows: InsertedRow[] = [];
 
     for (const psdAsset of psdAssets ?? []) {
       if (!psdAsset.file_path) continue;
@@ -228,8 +233,6 @@ export const analyzePsd = task({
       flattenLayers(psd.children ?? [], { frame: null, persistent: false }, flattened);
 
       console.log("Capas encontradas tras flatten:", flattened.length);
-
-      const insertedRows: { id: string; layer: Layer; frame: number | null; persistent: boolean }[] = [];
 
       for (let z = 0; z < flattened.length; z++) {
         const { layer, frame, persistent } = flattened[z];
@@ -297,82 +300,107 @@ export const analyzePsd = task({
         if (!insertError && inserted) {
           layersExtracted += 1;
           // Las capas ocultas no se aplanan a PNG ni se clasifican con Claude Vision.
-          if (!hidden) insertedRows.push({ id: inserted.id as string, layer, frame, persistent });
+          if (!hidden) allInsertedRows.push({ id: inserted.id as string, layer, frame, persistent, dpi });
         }
       }
+    }
 
-      metadata.set("step", "aplanando-capas");
-      metadata.set("progress", 0.5);
+    metadata.set("step", "aplanando-capas");
+    metadata.set("progress", 0.5);
 
-      const flattenable = insertedRows.filter(({ layer }) => layer.imageData);
+    const flattenable = allInsertedRows.filter(({ layer }) => layer.imageData);
 
-      for (let i = 0; i < flattenable.length; i++) {
-        const { id: assetId, layer, frame, persistent } = flattenable[i];
-        const imageData = layer.imageData!;
+    // "La capa de mayor área del proyecto" (fix 1 background-como-JPG): se trata como
+    // imagen de fondo aunque Claude Vision no la haya clasificado como 'fondo'.
+    let largestAreaAssetId: string | null = null;
+    let largestArea = -1;
+    for (const { id, layer } of flattenable) {
+      const imageData = layer.imageData!;
+      const area = imageData.width * imageData.height;
+      if (area > largestArea) {
+        largestArea = area;
+        largestAreaAssetId = id;
+      }
+    }
 
-        metadata.set("step", "clasificando-con-claude");
-        metadata.set("progress", 0.5 + 0.4 * (i / Math.max(flattenable.length, 1)));
+    for (let i = 0; i < flattenable.length; i++) {
+      const { id: assetId, layer, frame, persistent, dpi } = flattenable[i];
+      const imageData = layer.imageData!;
 
-        const pixelBuffer = Buffer.from(
-          imageData.data.buffer,
-          imageData.data.byteOffset,
-          imageData.data.byteLength,
-        );
+      metadata.set("step", "clasificando-con-claude");
+      metadata.set("progress", 0.5 + 0.4 * (i / Math.max(flattenable.length, 1)));
 
-        const pngBuffer = await sharp(pixelBuffer, {
-          raw: { width: imageData.width, height: imageData.height, channels: 4 },
-        })
-          .png()
-          .toBuffer();
+      const pixelBuffer = Buffer.from(
+        imageData.data.buffer,
+        imageData.data.byteOffset,
+        imageData.data.byteLength,
+      );
 
-        // Las capas de texto no pasan por Claude Vision: ya tenemos su fuente,
-        // tamaño y contenido real extraídos directamente del PSD.
-        const textMetadata = extractTextMetadata(layer);
-        const classification = textMetadata ? "texto" : await classifyLayerImage(pngBuffer);
+      const pngBuffer = await sharp(pixelBuffer, {
+        raw: { width: imageData.width, height: imageData.height, channels: 4 },
+      })
+        .png()
+        .toBuffer();
 
-        const filename = uniqueFilename(
-          baseFilenameFor({ classification, frame, persistent, layerName: layer.name ?? "capa" }),
-          usedFilenames,
-        );
+      // Las capas de texto no pasan por Claude Vision: ya tenemos su fuente,
+      // tamaño y contenido real extraídos directamente del PSD.
+      const textMetadata = extractTextMetadata(layer);
+      const classification = textMetadata ? "texto" : await classifyLayerImage(pngBuffer);
 
-        const storagePath = `${payload.projectId}/layers/${filename}`;
-        const { error: uploadError } = await supabase.storage
-          .from("adstudio-projects")
-          .upload(storagePath, pngBuffer, { contentType: "image/png", upsert: true });
+      // Fix 1: fondo/imagen de mayor área -> JPG calidad 85 (background.jpg) en vez de PNG.
+      const isBackgroundLayer = classification === "fondo" || assetId === largestAreaAssetId;
 
-        const width = imageData.width;
-        const height = imageData.height;
-        const qualityScore =
-          Math.round(resolutionFactor(width, height, formatoMaxArea) * dpiFactor(dpi) * 100) / 100;
+      const filenameBase = isBackgroundLayer
+        ? "background"
+        : baseFilenameFor({ classification, frame, persistent, layerName: layer.name ?? "capa" });
+      const filename = uniqueFilename(filenameBase, usedFilenames, isBackgroundLayer ? "jpg" : "png");
 
-        await supabase
-          .from("adstudio_assets")
-          .update({
-            classification,
-            quality_score: qualityScore,
-            width,
-            height,
-            dpi,
-            file_path: uploadError ? null : storagePath,
-            metadata: { ...(textMetadata ?? {}), filename },
-            status: "processed",
+      const exportBuffer = isBackgroundLayer
+        ? await sharp(pixelBuffer, {
+            raw: { width: imageData.width, height: imageData.height, channels: 4 },
           })
-          .eq("id", assetId);
+            .jpeg({ quality: 85 })
+            .toBuffer()
+        : pngBuffer;
+      const contentType = isBackgroundLayer ? "image/jpeg" : "image/png";
 
-        layersClassified += 1;
-      }
+      const storagePath = `${payload.projectId}/layers/${filename}`;
+      const { error: uploadError } = await supabase.storage
+        .from("adstudio-projects")
+        .upload(storagePath, exportBuffer, { contentType, upsert: true });
 
-      // Capas sin datos de imagen (p. ej. capas vectoriales/de ajuste) quedan extraídas pero sin clasificar.
-      const unflattenable = insertedRows.filter(({ layer }) => !layer.imageData);
-      if (unflattenable.length > 0) {
-        await supabase
-          .from("adstudio_assets")
-          .update({ status: "processed" })
-          .in(
-            "id",
-            unflattenable.map(({ id }) => id),
-          );
-      }
+      const width = imageData.width;
+      const height = imageData.height;
+      const qualityScore =
+        Math.round(resolutionFactor(width, height, formatoMaxArea) * dpiFactor(dpi) * 100) / 100;
+
+      await supabase
+        .from("adstudio_assets")
+        .update({
+          classification,
+          quality_score: qualityScore,
+          width,
+          height,
+          dpi,
+          file_path: uploadError ? null : storagePath,
+          metadata: { ...(textMetadata ?? {}), filename },
+          status: "processed",
+        })
+        .eq("id", assetId);
+
+      layersClassified += 1;
+    }
+
+    // Capas sin datos de imagen (p. ej. capas vectoriales/de ajuste) quedan extraídas pero sin clasificar.
+    const unflattenable = allInsertedRows.filter(({ layer }) => !layer.imageData);
+    if (unflattenable.length > 0) {
+      await supabase
+        .from("adstudio_assets")
+        .update({ status: "processed" })
+        .in(
+          "id",
+          unflattenable.map(({ id }) => id),
+        );
     }
 
     metadata.set("step", "generando-informe-incidencias");
