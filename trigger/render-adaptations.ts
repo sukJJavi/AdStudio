@@ -107,14 +107,14 @@ export const renderAdaptations = task({
           iabFormat: format.iab_format,
         });
 
-        // Fix 2: el fallback.jpg se compone con las capas reales del último frame
-        // que contiene el CTA (+ persistentes), no un render de Satori desde cero.
-        const fallbackJpg = await renderFallbackFromFrame({
-          assets: allAssets,
-          width: spec.ancho,
-          height: spec.alto,
+        // Fix 2: el fallback.jpg se compone con las capas reales del frame del
+        // CTA (+ persistentes), no un render de Satori desde cero.
+        const fallbackJpg = await renderFallbackFromFrame(
+          payload.projectId,
+          { width: spec.ancho, height: spec.alto },
+          allAssets,
           supabase,
-        });
+        );
 
         const basePath = `${payload.projectId}/adaptations/${format.iab_format}`;
 

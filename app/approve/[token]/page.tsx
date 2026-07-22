@@ -35,7 +35,7 @@ export default async function ApprovePage({
       </div>
 
       {context.hasHtml5 ? (
-        <div className="overflow-auto rounded-lg border border-border">
+        <div className="border border-border" style={{ borderRadius: 0, overflow: "hidden" }}>
           <iframe
             src={`/api/preview/${context.projectId}`}
             width={context.width ?? undefined}

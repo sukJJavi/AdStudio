@@ -140,7 +140,12 @@ export type ProjectAsset = {
 
 export type ChangeType = "A" | "B" | "C" | "D" | "E";
 
-export type ChangeStatus = "pending" | "in_progress" | "done" | "rejected";
+/**
+ * "completed" es el status que usa el chat de cambios sobre el master
+ * (app/api/master/refine, tipo 'C' — revisión de master); "done" es el
+ * status histórico de las adaptaciones por formato (A/B/D/E).
+ */
+export type ChangeStatus = "pending" | "in_progress" | "done" | "completed" | "rejected";
 
 export type ProjectChange = {
   id: string;

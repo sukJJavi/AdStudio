@@ -1,7 +1,7 @@
 import { getProject } from "@/lib/projects";
 import { getProjectFormats } from "@/lib/formats";
 import { getProjectAssets } from "@/lib/assets";
-import { getMasterStatus, rankFormatsByArea } from "@/lib/master";
+import { getMasterChanges, getMasterStatus, rankFormatsByArea } from "@/lib/master";
 import { unblockedFormats } from "@/lib/iab/incident-analyzer";
 import { FontSelector } from "@/components/project/font-selector";
 import { MasterView } from "@/components/project/master-view";
@@ -14,11 +14,12 @@ export default async function MasterPage({
 }) {
   const { id } = await params;
 
-  const [project, formats, assets, masterStatus] = await Promise.all([
+  const [project, formats, assets, masterStatus, masterChanges] = await Promise.all([
     getProject(id),
     getProjectFormats(id),
     getProjectAssets(id),
     getMasterStatus(id),
+    getMasterChanges(id),
   ]);
 
   const unblocked = unblockedFormats(formats);
@@ -64,6 +65,7 @@ export default async function MasterPage({
         formatsSummary={{ ready: unblocked.length, blocked: formats.length - unblocked.length }}
         hasUnblockedFormat={unblocked.length > 0}
         secondLargestFormat={secondLargest}
+        initialChanges={masterChanges}
       />
     </div>
   );

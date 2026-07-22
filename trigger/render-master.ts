@@ -114,7 +114,7 @@ export const renderMaster = task({
     const [jpgBuffer, pngBuffer] = await Promise.all([
       // Fix 2: el fallback.jpg se compone con las capas reales del último frame
       // que contiene el CTA (+ persistentes), no un render de Satori desde cero.
-      renderFallbackFromFrame({ assets: allAssets, width: spec.ancho, height: spec.alto, supabase }),
+      renderFallbackFromFrame(payload.projectId, { width: spec.ancho, height: spec.alto }, allAssets, supabase),
       renderBannerToPng(bannerElements),
     ]);
 

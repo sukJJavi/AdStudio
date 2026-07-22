@@ -1,90 +1,126 @@
 import sharp from "sharp";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { downloadAsset } from "@/lib/render/assets";
-import type { ProjectAsset } from "@/lib/types";
+import type { ProjectAsset, TextLayerMetadata } from "@/lib/types";
 
-/** Calidades a probar en orden hasta bajar de TARGET_MAX_BYTES. */
-const QUALITY_STEPS = [85, 75, 65, 55];
 const TARGET_MAX_BYTES = 50 * 1024;
 
 /**
- * Compone el fallback.jpg a partir de las capas reales del último frame que
- * contiene el CTA (persistentes + las de ese frame, ordenadas por z_index),
- * en vez de re-renderizar el banner desde cero con Satori — así el JPG de
- * respaldo se parece al banner real. Reduce calidad (85→75→65→55) hasta
- * bajar de 50KB; si ni con la calidad más baja lo consigue, devuelve esa.
+ * Compone el fallback.jpg a partir de las capas reales del frame del CTA
+ * (persistentes + capas de ese frame, ordenadas por z_index) — o, si no hay
+ * ninguna capa clasificada como CTA, del último frame disponible. Nunca
+ * re-renderiza el banner desde cero con Satori, así que el JPG de respaldo
+ * se parece al banner real. Reduce calidad (85→75→...→30) hasta bajar de
+ * 50KB; si ni con la calidad más baja lo consigue, devuelve esa.
  */
-export async function renderFallbackFromFrame(params: {
-  assets: ProjectAsset[];
-  width: number;
-  height: number;
-  supabase: SupabaseClient;
-}): Promise<Buffer> {
-  const { assets, width, height, supabase } = params;
-
-  const ctaFrames = assets
-    .filter((a) => a.classification === "cta" && !a.discarded)
-    .flatMap((a) => a.frames ?? []);
-  const targetFrame = ctaFrames.length > 0 ? Math.max(...ctaFrames) : null;
-
-  const layers = assets
-    .filter(
-      (a) =>
-        !a.discarded &&
-        a.file_path &&
-        a.layer_bounds &&
-        (a.persistent || (targetFrame != null && (a.frames ?? []).includes(targetFrame))),
-    )
-    .sort((a, b) => (a.z_index ?? 0) - (b.z_index ?? 0));
-
-  console.log("CTA frame:", targetFrame, "Capas en fallback:", layers.map((l) => l.layer_name));
-
-  const layerBuffers = await Promise.all(
-    layers.map(async (layer) => ({ layer, buffer: await downloadAsset(supabase, layer.file_path) })),
+export async function renderFallbackFromFrame(
+  projectId: string,
+  format: { width: number; height: number },
+  assets: ProjectAsset[],
+  supabase: SupabaseClient,
+): Promise<Buffer> {
+  // 1. Encontrar el frame del CTA.
+  const ctaAsset = assets.find(
+    (a) => a.classification === "cta" && !a.discarded && a.frames && a.frames.length > 0,
   );
 
+  const ctaFrame = ctaAsset ? Math.max(...(ctaAsset.frames as number[])) : null;
+
+  // 2. Seleccionar capas para el fallback: persistentes + capas del frame del
+  // CTA. Si no hay CTA, usar todas las capas del último frame.
+  const fallbackLayers = assets
+    .filter((a) => !a.discarded)
+    .filter((a) => {
+      if (a.persistent) return true;
+      if (ctaFrame !== null && a.frames?.includes(ctaFrame)) return true;
+      if (ctaFrame === null && a.frames && a.frames.length > 0) {
+        return a.frames.includes(Math.max(...a.frames));
+      }
+      return false;
+    })
+    .sort((a, b) => a.z_index - b.z_index);
+
+  console.log(
+    "Fallback layers:",
+    fallbackLayers.map((l) => ({
+      name: l.layer_name,
+      classification: l.classification,
+      persistent: l.persistent,
+      frames: l.frames,
+      export_as_jpg: l.export_as_jpg,
+    })),
+  );
+
+  // 3. Componer con sharp — canvas negro base.
   const composite: { input: Buffer; top: number; left: number }[] = [];
 
-  for (const { layer, buffer } of layerBuffers) {
+  for (const layer of fallbackLayers) {
+    // Descargar PNG original de Storage (siempre PNG para composición): el
+    // fichero convertido a JPG por export_as_jpg solo existe en el ZIP, no en
+    // Storage — ver lib/render/export-format.ts.
+    const metadataFilename = (layer.metadata as TextLayerMetadata | undefined)?.filename ?? null;
+    const pngFilename = metadataFilename?.replace(/\.jpg$/i, ".png") ?? layer.layer_name;
+    if (!pngFilename) continue;
+
+    const storagePath = `${projectId}/layers/${pngFilename}`;
+
+    const { data, error } = await supabase.storage.from("adstudio-projects").download(storagePath);
+
+    if (error || !data) {
+      console.error("Error descargando layer:", storagePath, error);
+      continue;
+    }
+
+    const layerBuffer = Buffer.from(await data.arrayBuffer());
     const bounds = layer.layer_bounds;
-    if (!buffer || !bounds) continue;
+    if (!bounds) continue;
 
-    // Recorta cada capa al área visible dentro del canvas — sharp exige que la
-    // imagen a compositar quepa dentro del lienzo, y algunas capas del PSD son
-    // mayores que el canvas o se salen de sus bordes. `extract()` exige enteros,
-    // de ahí los Math.round (layer_bounds puede traer valores no enteros).
-    const srcX = Math.round(Math.max(0, -bounds.x)); // offset dentro del PNG de la capa
-    const srcY = Math.round(Math.max(0, -bounds.y));
-    const dstX = Math.round(Math.max(0, bounds.x)); // posición en el canvas
-    const dstY = Math.round(Math.max(0, bounds.y));
+    // Calcular intersección visible con el canvas.
+    const srcX = Math.max(0, -bounds.x);
+    const srcY = Math.max(0, -bounds.y);
+    const dstX = Math.max(0, bounds.x);
+    const dstY = Math.max(0, bounds.y);
 
-    const visibleWidth = Math.floor(Math.min(bounds.width - srcX, width - dstX));
-    const visibleHeight = Math.floor(Math.min(bounds.height - srcY, height - dstY));
+    const visibleWidth = Math.min(bounds.width - srcX, format.width - dstX);
+    const visibleHeight = Math.min(bounds.height - srcY, format.height - dstY);
 
     if (visibleWidth <= 0 || visibleHeight <= 0) continue;
 
-    const croppedBuffer = await sharp(buffer)
-      .extract({ left: srcX, top: srcY, width: visibleWidth, height: visibleHeight })
+    const croppedBuffer = await sharp(layerBuffer)
+      .extract({
+        left: Math.round(srcX),
+        top: Math.round(srcY),
+        width: Math.round(visibleWidth),
+        height: Math.round(visibleHeight),
+      })
       .png()
       .toBuffer();
 
-    composite.push({ input: croppedBuffer, top: dstY, left: dstX });
+    composite.push({
+      input: croppedBuffer,
+      top: Math.round(dstY),
+      left: Math.round(dstX),
+    });
   }
 
-  let lastBuffer: Buffer | null = null;
+  // 4. Exportar como JPG < 50KB.
+  let quality = 85;
+  let result: Buffer;
 
-  for (const quality of QUALITY_STEPS) {
-    lastBuffer = await sharp({
-      create: { width, height, channels: 3, background: { r: 0, g: 0, b: 0 } },
+  do {
+    result = await sharp({
+      create: {
+        width: format.width,
+        height: format.height,
+        channels: 3,
+        background: { r: 0, g: 0, b: 0 },
+      },
     })
       .composite(composite)
       .jpeg({ quality })
       .toBuffer();
 
-    if (lastBuffer.byteLength <= TARGET_MAX_BYTES) {
-      return lastBuffer;
-    }
-  }
+    quality -= 10;
+  } while (result.byteLength > TARGET_MAX_BYTES && quality > 30);
 
-  return lastBuffer as Buffer;
+  return result;
 }

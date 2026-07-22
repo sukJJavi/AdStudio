@@ -1,8 +1,10 @@
+import { randomUUID } from "crypto";
 import { tasks, runs } from "@trigger.dev/sdk/v3";
 import { createSessionSupabaseClient } from "@/lib/supabase/server-session";
 import { getIABFormatById, type IABFormat } from "@/lib/iab/specs";
 import { unblockedFormats } from "@/lib/iab/incident-analyzer";
-import type { MasterRecord, Project, ProjectFormat } from "@/lib/types";
+import { createClaudeClient } from "@/lib/claude/client";
+import type { ChangeType, MasterRecord, Project, ProjectFormat, Tier } from "@/lib/types";
 
 const SIGNED_URL_TTL_SECONDS = 600;
 
@@ -173,5 +175,164 @@ export async function getMasterStatus(projectId: string): Promise<MasterStatusRe
     masters,
     hasHtml5: !!project.master_html,
     zipSizeBytes,
+  };
+}
+
+/** Rondas de cambios disponibles por tier — ver "Tiers y límites" en CLAUDE.md. `null` = ilimitado. */
+const TIER_ROUNDS_LIMIT: Record<Tier, number | null> = {
+  starter: 1,
+  studio: 3,
+  agency: null,
+};
+
+/** Tipos de cambio permitidos por tier — ver "Tipos de cambio" en CLAUDE.md. */
+const TIER_ALLOWED_CHANGE_TYPES: Record<Tier, ChangeType[]> = {
+  starter: ["A", "B"],
+  studio: ["A", "B", "C"],
+  agency: ["A", "B", "C", "D", "E"],
+};
+
+/** El chat de cambios sobre el master (app/api/master/refine) siempre es un cambio tipo C (revisión de master). */
+const REFINE_CHANGE_TYPE: ChangeType = "C";
+
+const REFINE_SYSTEM_PROMPT = `Eres un experto en producción de publicidad digital HTML5.
+Recibes el código HTML5 de un banner publicitario y una descripción de un cambio a aplicar.
+Devuelve SOLO el HTML completo modificado, sin explicaciones, sin markdown, comenzando con <!doctype html>.
+Modifica ÚNICAMENTE lo que se pide. No cambies nada más.`;
+
+/** Quita el fence ```html ... ``` si Claude lo añade a pesar de la instrucción de no hacerlo. */
+function stripCodeFence(text: string): string {
+  const trimmed = text.trim();
+  const fenced = trimmed.match(/^```(?:html)?\s*([\s\S]*?)\s*```$/i);
+  return (fenced ? fenced[1] : trimmed).trim();
+}
+
+export type MasterChangeEntry = {
+  id: string;
+  description: string | null;
+  requestedAt: string;
+};
+
+/** Historial de cambios aplicados sobre el master (tipo C), más recientes primero. */
+export async function getMasterChanges(projectId: string): Promise<MasterChangeEntry[]> {
+  const supabase = await createSessionSupabaseClient();
+
+  const { data } = await supabase
+    .from("adstudio_changes")
+    .select("id, description, requested_at")
+    .eq("project_id", projectId)
+    .eq("type", REFINE_CHANGE_TYPE)
+    .order("requested_at", { ascending: false });
+
+  return (data ?? []).map((row) => ({
+    id: row.id as string,
+    description: row.description as string | null,
+    requestedAt: row.requested_at as string,
+  }));
+}
+
+export type RefineMasterResult =
+  | { ok: true; change: MasterChangeEntry }
+  | { ok: false; status: 400 | 403 | 404 | 502; error: string };
+
+/**
+ * Aplica un cambio en lenguaje natural sobre el HTML5 del master vía Claude
+ * (chat de cambios, "Opción A" — ver components/project/master-view.tsx).
+ * Sobreescribe `adstudio_projects.master_html` y registra el cambio como tipo
+ * 'C' (revisión de master) en adstudio_changes.
+ */
+export async function refineMasterHtml(projectId: string, changeDescription: string): Promise<RefineMasterResult> {
+  const supabase = await createSessionSupabaseClient();
+
+  const { data: project, error: projectError } = await supabase
+    .from("adstudio_projects")
+    .select("master_html, tier")
+    .eq("id", projectId)
+    .single();
+
+  if (projectError || !project) {
+    return { ok: false, status: 404, error: "Proyecto no encontrado." };
+  }
+
+  if (!project.master_html) {
+    return { ok: false, status: 400, error: "Todavía no hay un master generado para aplicar cambios." };
+  }
+
+  const tier = (project.tier as Tier) ?? "starter";
+
+  if (!TIER_ALLOWED_CHANGE_TYPES[tier].includes(REFINE_CHANGE_TYPE)) {
+    return {
+      ok: false,
+      status: 403,
+      error: "Tu plan no incluye cambios de revisión de master. Mejora tu plan para usar esta función.",
+    };
+  }
+
+  const roundsLimit = TIER_ROUNDS_LIMIT[tier];
+  if (roundsLimit != null) {
+    const { count } = await supabase
+      .from("adstudio_changes")
+      .select("id", { count: "exact", head: true })
+      .eq("project_id", projectId)
+      .eq("type", REFINE_CHANGE_TYPE);
+
+    if ((count ?? 0) >= roundsLimit) {
+      return {
+        ok: false,
+        status: 403,
+        error: `Has agotado las ${roundsLimit} ronda${roundsLimit === 1 ? "" : "s"} de cambios de tu plan.`,
+      };
+    }
+  }
+
+  const client = createClaudeClient();
+  const response = await client.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 8000,
+    system: REFINE_SYSTEM_PROMPT,
+    messages: [
+      {
+        role: "user",
+        content: `HTML actual:\n${project.master_html}\n\nCambio a aplicar: ${changeDescription}`,
+      },
+    ],
+  });
+
+  const textBlock = response.content.find((block) => block.type === "text");
+  const raw = textBlock && textBlock.type === "text" ? textBlock.text : "";
+  const html = stripCodeFence(raw);
+
+  if (!html) {
+    return { ok: false, status: 502, error: "Claude no devolvió un HTML válido." };
+  }
+
+  await supabase.from("adstudio_projects").update({ master_html: html }).eq("id", projectId);
+
+  const { data: changeRow, error: changeError } = await supabase
+    .from("adstudio_changes")
+    .insert({
+      project_id: projectId,
+      type: REFINE_CHANGE_TYPE,
+      description: changeDescription,
+      status: "completed",
+    })
+    .select("id, description, requested_at")
+    .single();
+
+  if (changeError || !changeRow) {
+    console.error("Error insertando adstudio_changes:", changeError);
+    return {
+      ok: true,
+      change: { id: randomUUID(), description: changeDescription, requestedAt: new Date().toISOString() },
+    };
+  }
+
+  return {
+    ok: true,
+    change: {
+      id: changeRow.id as string,
+      description: changeRow.description as string | null,
+      requestedAt: changeRow.requested_at as string,
+    },
   };
 }

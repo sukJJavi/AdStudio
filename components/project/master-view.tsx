@@ -3,7 +3,8 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import type { MasterStatusResponse } from "@/lib/master";
+import { Textarea } from "@/components/ui/textarea";
+import type { MasterChangeEntry, MasterStatusResponse } from "@/lib/master";
 
 const STEP_LABELS: Record<string, string> = {
   "leyendo-assets": "Leyendo capas del PSD...",
@@ -28,6 +29,7 @@ export function MasterView({
   formatsSummary,
   hasUnblockedFormat,
   secondLargestFormat,
+  initialChanges,
 }: {
   projectId: string;
   cliente: string;
@@ -36,6 +38,7 @@ export function MasterView({
   formatsSummary: { ready: number; blocked: number };
   hasUnblockedFormat: boolean;
   secondLargestFormat: { iabFormat: string; nombreSoporte: string } | null;
+  initialChanges: MasterChangeEntry[];
 }) {
   const [status, setStatus] = useState(initialStatus);
   const [generating, setGenerating] = useState(false);
@@ -45,6 +48,12 @@ export function MasterView({
   const [sendingApproval, setSendingApproval] = useState(false);
   const [approvalUrl, setApprovalUrl] = useState<string | null>(null);
   const [approvalError, setApprovalError] = useState<string | null>(null);
+
+  const [changeText, setChangeText] = useState("");
+  const [changes, setChanges] = useState<MasterChangeEntry[]>(initialChanges);
+  const [applyingChange, setApplyingChange] = useState(false);
+  const [changeError, setChangeError] = useState<string | null>(null);
+  const [previewNonce, setPreviewNonce] = useState(0);
 
   const isGenerating = status.projectStatus === "master_generating";
   const hasMaster = status.masters.length > 0;
@@ -119,6 +128,38 @@ export function MasterView({
     }
   }
 
+  async function handleApplyChange() {
+    if (!changeText.trim()) return;
+
+    setApplyingChange(true);
+    setChangeError(null);
+
+    try {
+      const res = await fetch("/api/master/refine", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId, changeDescription: changeText.trim() }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        setChangeError(data.error ?? "No se pudo aplicar el cambio.");
+        return;
+      }
+
+      setChanges((prev) => [data.change as MasterChangeEntry, ...prev]);
+      setChangeText("");
+      // El iframe apunta siempre a /api/preview/[projectId] — el HTML ya se
+      // actualizó en el servidor, así que solo hace falta forzar que el
+      // navegador vuelva a pedirlo en vez de servir la copia cacheada.
+      setPreviewNonce((n) => n + 1);
+    } catch {
+      setChangeError("Error de red al aplicar el cambio.");
+    } finally {
+      setApplyingChange(false);
+    }
+  }
+
   const primaryMaster = status.masters.find((m) => m.isPrimary) ?? status.masters[0] ?? null;
   const otherMasters = status.masters.filter((m) => m.id !== primaryMaster?.id);
   const variantAlreadyExists =
@@ -190,12 +231,15 @@ export function MasterView({
             <CardContent className="space-y-4">
               {status.hasHtml5 ? (
                 <div className="flex flex-wrap items-start gap-4">
-                  <div className="max-h-[70vh] max-w-full overflow-auto rounded-md border border-border">
+                  <div
+                    className="max-h-[70vh] max-w-full border border-border"
+                    style={{ borderRadius: 0, overflow: "hidden" }}
+                  >
                     <iframe
-                      src={`/api/preview/${projectId}`}
+                      src={`/api/preview/${projectId}${previewNonce > 0 ? `?v=${previewNonce}` : ""}`}
                       width={primaryMaster.width}
                       height={primaryMaster.height}
-                      style={{ border: 0, display: "block" }}
+                      style={{ border: 0, display: "block", borderRadius: 0 }}
                       title="Preview del master (HTML5)"
                     />
                   </div>
@@ -264,6 +308,47 @@ export function MasterView({
               )}
             </CardContent>
           </Card>
+
+          {status.hasHtml5 && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Solicitar cambio</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <Textarea
+                  placeholder={
+                    'Describe el cambio que quieres aplicar...\n' +
+                    'Ej: "El background se mueve demasiado rápido, ponlo a 1.2s"\n' +
+                    'Ej: "El texto del frame 2 debería aparecer 500ms más tarde"\n' +
+                    'Ej: "El CTA debería quedarse visible en el último frame"'
+                  }
+                  value={changeText}
+                  onChange={(e) => setChangeText(e.target.value)}
+                  rows={4}
+                />
+                <Button onClick={handleApplyChange} disabled={applyingChange || !changeText.trim()}>
+                  {applyingChange ? "Aplicando..." : "Aplicar cambio"}
+                </Button>
+                {changeError && <p className="text-sm text-destructive">{changeError}</p>}
+
+                {changes.length > 0 && (
+                  <div className="space-y-2 pt-2">
+                    <p className="text-xs font-medium text-muted-foreground">Historial de cambios</p>
+                    <ul className="space-y-1.5">
+                      {changes.map((change) => (
+                        <li key={change.id} className="rounded-md border border-border p-2 text-xs">
+                          <p>{change.description}</p>
+                          <p className="text-muted-foreground">
+                            {new Date(change.requestedAt).toLocaleString()}
+                          </p>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
 
           {otherMasters.length > 0 && (
             <Card>
