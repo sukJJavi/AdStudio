@@ -471,9 +471,9 @@ create policy adstudio_subscriptions_delete on adstudio_subscriptions
 -- Estructura de objetos: {project_id}/psd/..., {project_id}/excel/..., {project_id}/animation/...
 -- =========================================================
 
-insert into storage.buckets (id, name, public)
-values ('adstudio-projects', 'adstudio-projects', false)
-on conflict (id) do nothing;
+insert into storage.buckets (id, name, public, file_size_limit)
+values ('adstudio-projects', 'adstudio-projects', false, 104857600) -- 100MB, tamaño máximo de un PSD
+on conflict (id) do update set file_size_limit = 104857600;
 
 drop policy if exists adstudio_storage_select on storage.objects;
 create policy adstudio_storage_select on storage.objects
@@ -519,7 +519,8 @@ create policy adstudio_storage_delete on storage.objects
     )
   );
 
--- Nota: las subidas de esta app se hacen desde /api/upload usando la
--- service role key (bypass de RLS). Las policies de storage.objects
--- anteriores solo son necesarias si en el futuro se sube directamente
--- desde el navegador con la anon key.
+-- Nota: el browser sube directamente a Storage con la sesión del usuario
+-- (createBrowserSupabaseClient, ver components/project/upload-zones.tsx),
+-- así que las policies anteriores son las que autorizan cada subida. La
+-- API route /api/upload solo registra metadata en adstudio_assets con la
+-- service role key (bypass de RLS), tras verificar ownership del proyecto.

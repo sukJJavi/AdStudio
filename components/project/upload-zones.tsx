@@ -6,12 +6,14 @@ import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { createBrowserSupabaseClient } from "@/lib/supabase/client";
 import type { ProjectAsset } from "@/lib/types";
 
 type PendingFile = {
   name: string;
   size: number;
-  status: "uploading" | "error";
+  status: "uploading" | "registering" | "analyzing" | "error";
+  progress: number;
   error?: string;
 };
 
@@ -21,21 +23,99 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function sanitizeFilename(filename: string): string {
+  return filename.replace(/[^a-zA-Z0-9.\-_]/g, "_");
+}
+
+function storageUploadError(responseText: string, status: number): string {
+  try {
+    const parsed = JSON.parse(responseText);
+    if (typeof parsed?.message === "string") return parsed.message;
+  } catch {
+    // Respuesta no es JSON, se usa el mensaje genérico de abajo.
+  }
+  return `Error al subir el archivo (${status}).`;
+}
+
+// Supabase Storage no expone progreso nativo en su SDK, así que se sube con
+// XMLHttpRequest directo a la API REST para poder leer xhr.upload.progress.
+function uploadWithProgress(
+  file: File,
+  filePath: string,
+  accessToken: string,
+  onProgress: (percent: number) => void,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+
+    xhr.upload.addEventListener("progress", (e) => {
+      if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+    });
+
+    xhr.addEventListener("load", () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve();
+      else reject(new Error(storageUploadError(xhr.responseText, xhr.status)));
+    });
+
+    xhr.addEventListener("error", () => reject(new Error("Error de red al subir el archivo.")));
+
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+    const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+    const url = `${supabaseUrl}/storage/v1/object/adstudio-projects/${filePath}`;
+
+    xhr.open("POST", url);
+    xhr.setRequestHeader("Authorization", `Bearer ${accessToken}`);
+    xhr.setRequestHeader("apikey", anonKey);
+    xhr.setRequestHeader("x-upsert", "false");
+    xhr.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+
+    xhr.send(file);
+  });
+}
+
+/**
+ * Sube el archivo directamente al bucket de Supabase Storage desde el
+ * browser (evita el límite de ~4.5MB de las API routes de Vercel) y luego
+ * registra el asset en BBDD vía POST JSON a /api/upload.
+ */
 async function uploadAsset(
   projectId: string,
   type: "psd" | "excel" | "animation",
   file: File,
-): Promise<{ ok: true } | { ok: false; error: string }> {
-  const formData = new FormData();
-  formData.append("projectId", projectId);
-  formData.append("type", type);
-  formData.append("file", file);
+  onProgress: (percent: number) => void,
+): Promise<{ ok: true; analysisTriggered: boolean } | { ok: false; error: string }> {
+  const supabase = createBrowserSupabaseClient();
+  const {
+    data: { session },
+  } = await supabase.auth.getSession();
 
-  const res = await fetch("/api/upload", { method: "POST", body: formData });
+  if (!session) {
+    return { ok: false, error: "Sesión expirada. Recarga la página e inicia sesión de nuevo." };
+  }
+
+  const filePath = `${projectId}/${type}/${Date.now()}-${sanitizeFilename(file.name)}`;
+
+  try {
+    await uploadWithProgress(file, filePath, session.access_token, onProgress);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : "Error al subir el archivo." };
+  }
+
+  const res = await fetch("/api/upload", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      projectId,
+      filePath,
+      fileType: type,
+      fileName: file.name,
+      fileSize: file.size,
+    }),
+  });
   const data = await res.json();
 
-  if (!res.ok) return { ok: false, error: data.error ?? "Error al subir el archivo." };
-  return { ok: true };
+  if (!res.ok) return { ok: false, error: data.error ?? "Error al registrar el archivo." };
+  return { ok: true, analysisTriggered: !!data.analysisTriggered };
 }
 
 async function deleteAsset(assetId: string): Promise<{ ok: true } | { ok: false; error: string }> {
@@ -129,6 +209,37 @@ function DropArea({
   );
 }
 
+function pendingStatusLabel(p: PendingFile): string {
+  if (p.status === "error") return p.error ?? "Error";
+  if (p.status === "uploading") return `Subiendo... ${p.progress}%`;
+  if (p.status === "registering") return "Subido, registrando...";
+  if (p.status === "analyzing") return "Analizando...";
+  return "";
+}
+
+function PendingFileRow({ file, icon }: { file: PendingFile; icon: string }) {
+  return (
+    <li className="flex flex-col gap-1 rounded-md border border-border p-2 text-sm">
+      <div className="flex items-center gap-3">
+        <span className="flex h-10 w-10 items-center justify-center rounded bg-muted text-xs">{icon}</span>
+        <span className="flex-1 truncate">{file.name}</span>
+        <span className="text-xs text-muted-foreground">{formatBytes(file.size)}</span>
+        <span className={`text-xs ${file.status === "error" ? "text-red-600" : "text-muted-foreground"}`}>
+          {pendingStatusLabel(file)}
+        </span>
+      </div>
+      {file.status !== "error" && (
+        <div className="h-1 w-full overflow-hidden rounded-full bg-muted">
+          <div
+            className="h-full rounded-full bg-primary transition-all duration-200"
+            style={{ width: `${file.status === "uploading" ? file.progress : 100}%` }}
+          />
+        </div>
+      )}
+    </li>
+  );
+}
+
 export function UploadZones({
   projectId,
   initialAssets,
@@ -194,28 +305,50 @@ export function UploadZones({
       if (!file.name.toLowerCase().endsWith(".psd")) {
         setPendingPsd((prev) => [
           ...prev,
-          { name: file.name, size: file.size, status: "error", error: "Solo se aceptan archivos .psd" },
+          { name: file.name, size: file.size, status: "error", progress: 0, error: "Solo se aceptan archivos .psd" },
         ]);
         continue;
       }
       if (file.size > 100 * 1024 * 1024) {
         setPendingPsd((prev) => [
           ...prev,
-          { name: file.name, size: file.size, status: "error", error: "Supera el máximo de 100MB" },
+          { name: file.name, size: file.size, status: "error", progress: 0, error: "Supera el máximo de 100MB" },
         ]);
         continue;
       }
 
-      setPendingPsd((prev) => [...prev, { name: file.name, size: file.size, status: "uploading" }]);
+      setPendingPsd((prev) => [
+        ...prev,
+        { name: file.name, size: file.size, status: "uploading", progress: 0 },
+      ]);
 
       tryGeneratePsdThumbnail(file).then((thumb) => {
         if (thumb) setPsdThumbnails((prev) => ({ ...prev, [file.name]: thumb }));
       });
 
-      const result = await uploadAsset(projectId, "psd", file);
+      const result = await uploadAsset(projectId, "psd", file, (percent) => {
+        setPendingPsd((prev) =>
+          prev.map((p) =>
+            p.name === file.name
+              ? { ...p, progress: percent, status: percent >= 100 ? "registering" : "uploading" }
+              : p,
+          ),
+        );
+      });
+
       if (result.ok) {
-        setPendingPsd((prev) => prev.filter((p) => p.name !== file.name));
-        router.refresh();
+        if (result.analysisTriggered) {
+          setPendingPsd((prev) =>
+            prev.map((p) => (p.name === file.name ? { ...p, status: "analyzing" } : p)),
+          );
+          setTimeout(() => {
+            setPendingPsd((prev) => prev.filter((p) => p.name !== file.name));
+            router.refresh();
+          }, 800);
+        } else {
+          setPendingPsd((prev) => prev.filter((p) => p.name !== file.name));
+          router.refresh();
+        }
       } else {
         setPendingPsd((prev) =>
           prev.map((p) => (p.name === file.name ? { ...p, status: "error", error: result.error } : p)),
@@ -230,15 +363,19 @@ export function UploadZones({
 
     const ext = file.name.toLowerCase();
     if (!ext.endsWith(".xlsx") && !ext.endsWith(".xls")) {
-      setPendingExcel([{ name: file.name, size: file.size, status: "error", error: "Solo se aceptan .xlsx o .xls" }]);
+      setPendingExcel([
+        { name: file.name, size: file.size, status: "error", progress: 0, error: "Solo se aceptan .xlsx o .xls" },
+      ]);
       return;
     }
     if (file.size > 10 * 1024 * 1024) {
-      setPendingExcel([{ name: file.name, size: file.size, status: "error", error: "Supera el máximo de 10MB" }]);
+      setPendingExcel([
+        { name: file.name, size: file.size, status: "error", progress: 0, error: "Supera el máximo de 10MB" },
+      ]);
       return;
     }
 
-    setPendingExcel([{ name: file.name, size: file.size, status: "uploading" }]);
+    setPendingExcel([{ name: file.name, size: file.size, status: "uploading", progress: 0 }]);
     setExcelPreview(null);
 
     try {
@@ -254,10 +391,27 @@ export function UploadZones({
       // Preview best-effort; si falla igualmente subimos el archivo.
     }
 
-    const result = await uploadAsset(projectId, "excel", file);
+    const result = await uploadAsset(projectId, "excel", file, (percent) => {
+      setPendingExcel((prev) =>
+        prev.map((p) =>
+          p.name === file.name
+            ? { ...p, progress: percent, status: percent >= 100 ? "registering" : "uploading" }
+            : p,
+        ),
+      );
+    });
+
     if (result.ok) {
-      setPendingExcel([]);
-      router.refresh();
+      if (result.analysisTriggered) {
+        setPendingExcel((prev) => prev.map((p) => (p.name === file.name ? { ...p, status: "analyzing" } : p)));
+        setTimeout(() => {
+          setPendingExcel([]);
+          router.refresh();
+        }, 800);
+      } else {
+        setPendingExcel([]);
+        router.refresh();
+      }
     } else {
       setPendingExcel((prev) =>
         prev.map((p) => (p.name === file.name ? { ...p, status: "error", error: result.error } : p)),
@@ -272,20 +426,29 @@ export function UploadZones({
     const ext = file.name.toLowerCase();
     if (!ext.endsWith(".pdf") && !ext.endsWith(".txt")) {
       setPendingAnimation([
-        { name: file.name, size: file.size, status: "error", error: "Solo se aceptan .pdf o .txt" },
+        { name: file.name, size: file.size, status: "error", progress: 0, error: "Solo se aceptan .pdf o .txt" },
       ]);
       return;
     }
     if (file.size > 20 * 1024 * 1024) {
       setPendingAnimation([
-        { name: file.name, size: file.size, status: "error", error: "Supera el máximo de 20MB" },
+        { name: file.name, size: file.size, status: "error", progress: 0, error: "Supera el máximo de 20MB" },
       ]);
       return;
     }
 
-    setPendingAnimation([{ name: file.name, size: file.size, status: "uploading" }]);
+    setPendingAnimation([{ name: file.name, size: file.size, status: "uploading", progress: 0 }]);
 
-    const result = await uploadAsset(projectId, "animation", file);
+    const result = await uploadAsset(projectId, "animation", file, (percent) => {
+      setPendingAnimation((prev) =>
+        prev.map((p) =>
+          p.name === file.name
+            ? { ...p, progress: percent, status: percent >= 100 ? "registering" : "uploading" }
+            : p,
+        ),
+      );
+    });
+
     if (result.ok) {
       setPendingAnimation([]);
       router.refresh();
@@ -394,16 +557,7 @@ export function UploadZones({
               </li>
             ))}
             {pendingPsd.map((p) => (
-              <li key={p.name} className="flex items-center gap-3 rounded-md border border-border p-2 text-sm">
-                <span className="flex h-10 w-10 items-center justify-center rounded bg-muted text-xs">
-                  PSD
-                </span>
-                <span className="flex-1 truncate">{p.name}</span>
-                <span className="text-xs text-muted-foreground">{formatBytes(p.size)}</span>
-                <span className={`text-xs ${p.status === "error" ? "text-red-600" : "text-muted-foreground"}`}>
-                  {p.status === "error" ? p.error : "subiendo..."}
-                </span>
-              </li>
+              <PendingFileRow key={p.name} file={p} icon="PSD" />
             ))}
           </ul>
         </CardContent>
@@ -449,16 +603,7 @@ export function UploadZones({
               </li>
             ))}
             {pendingExcel.map((p) => (
-              <li key={p.name} className="flex items-center gap-3 rounded-md border border-border p-2 text-sm">
-                <span className="flex h-10 w-10 items-center justify-center rounded bg-muted text-xs">
-                  XLS
-                </span>
-                <span className="flex-1 truncate">{p.name}</span>
-                <span className="text-xs text-muted-foreground">{formatBytes(p.size)}</span>
-                <span className={`text-xs ${p.status === "error" ? "text-red-600" : "text-muted-foreground"}`}>
-                  {p.status === "error" ? p.error : "subiendo..."}
-                </span>
-              </li>
+              <PendingFileRow key={p.name} file={p} icon="XLS" />
             ))}
           </ul>
 
@@ -553,15 +698,7 @@ export function UploadZones({
               </li>
             ))}
             {pendingAnimation.map((p) => (
-              <li key={p.name} className="flex items-center gap-3 rounded-md border border-border p-2 text-sm">
-                <span className="flex h-10 w-10 items-center justify-center rounded bg-muted text-xs">
-                  DOC
-                </span>
-                <span className="flex-1 truncate">{p.name}</span>
-                <span className={`text-xs ${p.status === "error" ? "text-red-600" : "text-muted-foreground"}`}>
-                  {p.status === "error" ? p.error : "subiendo..."}
-                </span>
-              </li>
+              <PendingFileRow key={p.name} file={p} icon="DOC" />
             ))}
           </ul>
         </CardContent>
