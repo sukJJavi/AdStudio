@@ -5,8 +5,9 @@ import type { Incidencia, Project, ProjectAsset, ProjectFormat } from "@/lib/typ
 /**
  * Umbrales de quality_score (escala 0-1, ver .claude/skills/psd-analysis.md):
  * - >= QUALITY_OK: sin incidencia relacionada con calidad.
- * - [QUALITY_CRITICO, QUALITY_OK): ATENCIÓN para imagen_principal.
- * - < QUALITY_CRITICO: CRÍTICO para imagen_principal/logo.
+ * - [QUALITY_CRITICO, QUALITY_OK): ATENCIÓN (MEDIUM_QUALITY_MAIN_IMAGE) para imagen_principal.
+ * - < QUALITY_CRITICO: ATENCIÓN (LOW_QUALITY_MAIN_IMAGE) para imagen_principal, solo si su área
+ *   supera MAIN_IMAGE_AREA_RATIO del canvas — nunca bloquea el formato.
  */
 const QUALITY_OK = 0.8;
 const QUALITY_CRITICO = 0.5;
@@ -16,6 +17,9 @@ const UNKNOWN_LAYER_AREA_RATIO = 0.1;
 
 /** layer_type usados por trigger/analyze-psd.ts para capas extraídas del PSD (no para los archivos originales). */
 const PSD_LAYER_TYPES = new Set(["texto", "grupo", "imagen"]);
+
+/** LOW_QUALITY_MAIN_IMAGE solo aplica si la capa ocupa más de este % del área total del canvas. */
+const MAIN_IMAGE_AREA_RATIO = 0.2;
 
 export type FormatDerivedStatus = "ready" | "warning" | "blocked";
 
@@ -104,19 +108,6 @@ function buildIncidenciasForFormat(
     });
   }
 
-  for (const asset of psdLayers) {
-    const isCriticalClassification = asset.classification === "imagen_principal" || asset.classification === "logo";
-    if (isCriticalClassification && typeof asset.quality_score === "number" && asset.quality_score < QUALITY_CRITICO) {
-      incidencias.push({
-        level: "critico",
-        code: "LOW_QUALITY_MAIN_IMAGE",
-        message: `La capa "${asset.layer_name ?? "sin nombre"}" (${asset.classification}) tiene una resolución insuficiente (score ${asset.quality_score}) para el formato "${format.nombre_soporte}".`,
-        format_id: format.id,
-        asset_id: asset.id,
-      });
-    }
-  }
-
   // 🟡 ATENCIÓN
 
   if (!hasImagenPrincipal) {
@@ -139,6 +130,30 @@ function buildIncidenciasForFormat(
   }
 
   for (const asset of psdLayers) {
+    const isMainImageOverAreaThreshold =
+      asset.classification === "imagen_principal" &&
+      spec &&
+      asset.layer_bounds &&
+      (() => {
+        const canvasArea = spec.ancho * spec.alto;
+        const assetArea = asset.layer_bounds!.width * asset.layer_bounds!.height;
+        return canvasArea > 0 && assetArea / canvasArea > MAIN_IMAGE_AREA_RATIO;
+      })();
+
+    if (
+      isMainImageOverAreaThreshold &&
+      typeof asset.quality_score === "number" &&
+      asset.quality_score < QUALITY_CRITICO
+    ) {
+      incidencias.push({
+        level: "atencion",
+        code: "LOW_QUALITY_MAIN_IMAGE",
+        message: `La capa "${asset.layer_name ?? "sin nombre"}" (imagen_principal) tiene una resolución insuficiente (score ${asset.quality_score}) para el formato "${format.nombre_soporte}".`,
+        format_id: format.id,
+        asset_id: asset.id,
+      });
+    }
+
     if (
       asset.classification === "imagen_principal" &&
       typeof asset.quality_score === "number" &&
