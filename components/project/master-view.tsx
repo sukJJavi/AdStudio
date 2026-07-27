@@ -46,6 +46,8 @@ export function MasterView({
   const [generatingVariant, setGeneratingVariant] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
 
+  const [regeneratingMaster, setRegeneratingMaster] = useState(false);
+
   const [sendingApproval, setSendingApproval] = useState(false);
   const [approvalUrl, setApprovalUrl] = useState<string | null>(null);
   const [approvalError, setApprovalError] = useState<string | null>(null);
@@ -100,6 +102,47 @@ export function MasterView({
       setGenError("Error de red al lanzar la generación del master.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  /**
+   * A diferencia de handleGenerate, no toca `status.projectStatus` mientras regenera:
+   * el master ya generado se mantiene visible (el usuario ve el botón "Regenerando..."
+   * sin que la vista salte a la tarjeta de progreso de la primera generación) y solo
+   * al terminar se refresca el status y se fuerza la recarga del iframe con el nonce.
+   */
+  async function handleRegenerateMaster() {
+    setRegeneratingMaster(true);
+    setGenError(null);
+
+    try {
+      const res = await fetch("/api/master/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId, isPrimary: true }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        setGenError(data.error ?? "No se pudo regenerar el master.");
+        return;
+      }
+
+      for (;;) {
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        const statusRes = await fetch(`/api/master/status/${projectId}`, { cache: "no-store" });
+        if (!statusRes.ok) continue;
+        const next = (await statusRes.json()) as MasterStatusResponse;
+        if (next.projectStatus === "master_generating") continue;
+        setStatus(next);
+        break;
+      }
+
+      setPreviewNonce((n) => n + 1);
+    } catch {
+      setGenError("Error de red al regenerar el master.");
+    } finally {
+      setRegeneratingMaster(false);
     }
   }
 
@@ -292,6 +335,10 @@ export function MasterView({
                         : `Generar segunda variante (${secondLargestFormat.nombreSoporte})`}
                     </Button>
                   )}
+
+                  <Button variant="secondary" onClick={handleRegenerateMaster} disabled={regeneratingMaster}>
+                    {regeneratingMaster ? "Regenerando..." : "Regenerar master"}
+                  </Button>
 
                   <Button onClick={handleSendApproval} disabled={sendingApproval}>
                     {sendingApproval ? "Enviando..." : "Enviar al cliente para aprobación"}
