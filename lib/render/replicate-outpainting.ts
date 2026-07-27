@@ -3,6 +3,24 @@ import Replicate from "replicate";
 
 const replicate = new Replicate({ auth: process.env.REPLICATE_API_KEY! });
 
+async function uploadImageToReplicate(buffer: Buffer, mimeType: string): Promise<string> {
+  const response = await fetch("https://api.replicate.com/v1/files", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${process.env.REPLICATE_API_KEY}`,
+      "Content-Type": mimeType,
+    },
+    body: new Uint8Array(buffer),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Upload failed: ${response.status}`);
+  }
+
+  const data = (await response.json()) as { urls: { get: string } };
+  return data.urls.get;
+}
+
 /**
  * Genera una imagen adaptada a un nuevo formato IAB a partir del render del
  * master (Opción A: Browserless + FLUX + Claude, ver
@@ -25,7 +43,6 @@ export async function outpaintToFormat(
     process.env.REPLICATE_API_KEY?.length,
   );
 
-  const masterBase64 = `data:image/png;base64,${masterImageBuffer.toString("base64")}`;
   const aspectRatio = `${targetWidth}:${targetHeight}`;
 
   const sourceRatio = masterWidth / masterHeight;
@@ -36,9 +53,12 @@ export async function outpaintToFormat(
 
   if (ratioDiff < 0.15) {
     // Ratio similar: FLUX Redux reencuadra/varía manteniendo la composición.
+    const imageUrl = await uploadImageToReplicate(masterImageBuffer, "image/png");
+    console.log("Image URL subida a Replicate:", imageUrl.substring(0, 50));
+
     output = (await replicate.run("black-forest-labs/flux-redux-dev", {
       input: {
-        redux_image: masterBase64,
+        redux_image: imageUrl,
         aspect_ratio: aspectRatio,
         num_inference_steps: 25,
         guidance_scale: 3.5,
@@ -66,11 +86,12 @@ export async function outpaintToFormat(
       .png()
       .toBuffer();
 
-    const canvasBase64 = `data:image/png;base64,${canvasBuffer.toString("base64")}`;
+    const imageUrl = await uploadImageToReplicate(canvasBuffer, "image/png");
+    console.log("Image URL subida a Replicate:", imageUrl.substring(0, 50));
 
     output = (await replicate.run("black-forest-labs/flux-fill-dev", {
       input: {
-        image: canvasBase64,
+        image: imageUrl,
         prompt: "advertising banner background, same style and colors as the original image, professional, seamless extension",
         num_inference_steps: 28,
         guidance_scale: 30,
@@ -80,7 +101,7 @@ export async function outpaintToFormat(
     })) as string[];
   }
 
-  const imageUrl = Array.isArray(output) ? output[0] : output;
-  const imageResponse = await fetch(imageUrl as string);
+  const resultUrl = Array.isArray(output) ? output[0] : output;
+  const imageResponse = await fetch(resultUrl as string);
   return Buffer.from(await imageResponse.arrayBuffer());
 }
