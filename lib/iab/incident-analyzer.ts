@@ -7,7 +7,9 @@ import type { Incidencia, Project, ProjectAsset, ProjectFormat } from "@/lib/typ
  * - >= QUALITY_OK: sin incidencia relacionada con calidad.
  * - [QUALITY_CRITICO, QUALITY_OK): ATENCIÓN (MEDIUM_QUALITY_MAIN_IMAGE) para imagen_principal.
  * - < QUALITY_CRITICO: ATENCIÓN (LOW_QUALITY_MAIN_IMAGE) para imagen_principal, solo si su área
- *   supera MAIN_IMAGE_AREA_RATIO del canvas — nunca bloquea el formato.
+ *   supera MAIN_IMAGE_AREA_RATIO del canvas y su layer_name no matchea LOGO_LIKE_NAME_PATTERN
+ *   (evita falsos positivos de logos/iconos mal clasificados por Claude Vision) — nunca bloquea
+ *   el formato.
  */
 const QUALITY_OK = 0.8;
 const QUALITY_CRITICO = 0.5;
@@ -19,7 +21,14 @@ const UNKNOWN_LAYER_AREA_RATIO = 0.1;
 const PSD_LAYER_TYPES = new Set(["texto", "grupo", "imagen"]);
 
 /** LOW_QUALITY_MAIN_IMAGE solo aplica si la capa ocupa más de este % del área total del canvas. */
-const MAIN_IMAGE_AREA_RATIO = 0.2;
+const MAIN_IMAGE_AREA_RATIO = 0.3;
+
+/**
+ * Palabras que, si aparecen en layer_name, excluyen la capa de LOW_QUALITY_MAIN_IMAGE:
+ * suelen ser logos/iconos mal clasificados como imagen_principal por Claude Vision,
+ * no imágenes fotográficas cuya baja resolución sea relevante.
+ */
+const LOGO_LIKE_NAME_PATTERN = /logo|logotype|brand|icon|icono|mark/i;
 
 export type FormatDerivedStatus = "ready" | "warning" | "blocked";
 
@@ -134,6 +143,7 @@ function buildIncidenciasForFormat(
       asset.classification === "imagen_principal" &&
       spec &&
       asset.layer_bounds &&
+      !LOGO_LIKE_NAME_PATTERN.test(asset.layer_name ?? "") &&
       (() => {
         const canvasArea = spec.ancho * spec.alto;
         const assetArea = asset.layer_bounds!.width * asset.layer_bounds!.height;
