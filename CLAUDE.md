@@ -65,12 +65,16 @@ adaptaciones por formato, animación y exportación.
   /render-master.ts   → job: JPG/PNG de respaldo (Satori+Resvg, aplica font_primary) + HTML5 del master vía
                           Claude (1 sola llamada, ver html5-generator.ts) + ZIP (index.html + PNGs de capas +
                           fallback.jpg) subido a {project_id}/master/master.zip
-  /render-adaptations.ts → job: excluye el formato master (adstudio_formats.is_master, o el de mayor área
-                          si ninguno lo está) y adapta el resto con 1 llamada a Claude VISION por formato
-                          (adaptHtml5ToFormatWithClaude — ve el fallback.jpg del master y cada asset como
-                          imagen, no solo texto) + fallback.jpg compuesto con sharp igual que el master
-                          (renderFallbackFromFrame, sin Claude Vision) → ZIP global, una carpeta por medio en
-                          adstudio_formats.soportes (pieceFoldersFor en lib/export/zip.ts)
+  /render-adaptations.ts → job: Opción A (Browserless + Replicate FLUX + Claude Vision), maxDuration: 600.
+                          Excluye el formato master (adstudio_formats.is_master, o el de mayor área si
+                          ninguno lo está); lo renderiza UNA VEZ con Browserless (lib/render/browserless-
+                          renderer.ts) y reutiliza ese PNG para todos los formatos. Por cada formato: FLUX
+                          (lib/render/replicate-outpainting.ts) genera un background adaptado a las nuevas
+                          dimensiones, y Claude Vision (adaptHtml5WithVision) posiciona el resto de assets
+                          (texto/logo/CTA) viendo el master renderizado + el background + cada asset como
+                          imagen. background.jpg = fallback.jpg = el outpainted (no hay composición con sharp
+                          por formato). ZIP global, una carpeta por medio en adstudio_formats.soportes
+                          (pieceFoldersFor en lib/export/zip.ts)
 
 /lib
   /iab                → specs IAB (dimensiones, pesos, zonas seguras) + análisis de incidencias
@@ -84,14 +88,21 @@ adaptaciones por formato, animación y exportación.
                           usado solo para el fallback.jpg — no interviene en el HTML5
     /html5-generator.ts → generateHtml5Master: 1 llamada a Claude por proyecto (el master), genera el HTML5
                           de producción (assets referenciados por filename externo, nunca en base64) —
-                          ver prompt de agente en el propio fichero. adaptHtml5ToFormatWithClaude: 1 llamada
-                          a Claude VISION por formato de adaptación — el mensaje mezcla texto e imágenes
-                          (content array): el fallback.jpg del master, cada asset individual con su filename
-                          y dimensiones reales, el HTML5 del master como texto, y las instrucciones de
-                          adaptación. Claude ve visualmente el banner y cada pieza suelta antes de recomponer
-                          el layout para las nuevas dimensiones — no solo texto/JSON como en generateHtml5Master.
-                          Los assets son los mismos del master (Map<filename, Buffer>, descargados una única
-                          vez en trigger/render-adaptations.ts); Claude decide cómo posicionarlos
+                          ver prompt de agente en el propio fichero. adaptHtml5WithVision (Opción A): 1
+                          llamada a Claude VISION por formato de adaptación — el mensaje mezcla texto e
+                          imágenes: el master renderizado de verdad (Browserless), el background ya adaptado
+                          por FLUX (que Claude referenciará como `background.jpg`, sin pedírselo como asset a
+                          reposicionar), cada asset de primer plano suelto (texto/logo/CTA/decorativo —
+                          BACKGROUND_CLASSIFICATIONS excluye fondo/imagen_principal) y el HTML del master como
+                          texto. Claude solo decide dónde va CADA ELEMENTO DE PRIMER PLANO, no recompone el
+                          fondo (eso ya lo hizo FLUX)
+    /browserless-renderer.ts → renderHtmlToImage: screenshot PNG de un HTML5 vía browserless.io — referencia
+                          visual real del master (con animación en el frame inicial) para Claude Vision y
+                          para el outpainting de FLUX
+    /replicate-outpainting.ts → outpaintToFormat: genera el background adaptado a un formato con Replicate
+                          FLUX. Ratio similar (<15% de diferencia) → FLUX Redux (reencuadre/variación); ratio
+                          muy distinto → canvas del tamaño destino con el master centrado + FLUX Fill
+                          (outpainting) para extender el resto
     /html5-cache.ts     → saveHtml5Master/getHtml5Master: cachea el HTML5 del master en
                           adstudio_projects.master_html — evita volver a llamar a Claude para regenerar el
                           master en cada adaptación (cada adaptación sí llama a Claude una vez, para
@@ -176,10 +187,12 @@ Single-context layout: `CONTEXT.md` + `docs/adr/` at the repo root, created lazi
 - El ZIP se nombra `{cliente}_{producto}_adaptaciones.zip`, con esta estructura interna:
   `{cliente}_{producto}/manifest.json` y, por cada medio en `adstudio_formats.soportes` (o `nombre_soporte`
   si no hay ninguno, ver Bloque 10):
-  `{cliente}_{producto}/{medio}/{iab_format}/index.html|{filename}.png (uno por capa)|fallback.jpg`
-  (los PNGs son los mismos del master en todos los formatos — Claude decide cómo posicionarlos en el HTML5
-  de cada formato, ver adaptHtml5ToFormatWithClaude en html5-generator.ts; no se recortan ni escalan). El
-  ZIP del master (`{project_id}/master/master.zip`) sigue la misma estructura sin subcarpeta por pieza.
+  `{cliente}_{producto}/{medio}/{iab_format}/index.html|background.jpg|{filename}.png (resto de capas)|fallback.jpg`
+  (background.jpg es el generado por FLUX para ese formato — Opción A, ver adaptHtml5WithVision en
+  html5-generator.ts; fallback.jpg es ese mismo buffer; el resto de PNGs son los mismos del master en todos
+  los formatos, Claude Vision decide dónde posicionarlos). El ZIP del master (`{project_id}/master/master.zip`)
+  sigue la misma estructura sin subcarpeta por pieza (fallback.jpg ahí sí compuesto con Satori/sharp, ver
+  render-master.ts).
 - manifest.json incluye: dimensiones, peso (JPG y HTML), versión, fecha, incidencias por pieza
 - Nunca bloquear el proyecto completo por un formato con incidencia crítica
 
@@ -218,10 +231,10 @@ Single-context layout: `CONTEXT.md` + `docs/adr/` at the repo root, created lazi
 - `lib/render/smart-crop.ts`: reencuadra con Claude Vision una imagen para un
   formato de proporción muy distinta a la original. Con diferencia de
   proporción < 20% hace un resize/cover directo con Sharp, sin llamar a Claude
-- **No se usa en `trigger/render-adaptations.ts`**: desde que las adaptaciones
-  recomponen el layout completo con Claude (`adaptHtml5ToFormatWithClaude`,
-  ver arriba), los assets del master se reutilizan tal cual — es Claude quien
-  decide cómo posicionarlos en el HTML5 de cada formato, no hace falta
+- **No se usa en `trigger/render-adaptations.ts`**: el background adaptado a
+  cada formato lo genera Replicate FLUX (Opción A, `lib/render/replicate-
+  outpainting.ts`), no smart-crop; el resto de assets del master se reutilizan
+  tal cual — es Claude Vision quien decide cómo posicionarlos, no hace falta
   recortar el PNG. La función se mantiene para un posible uso futuro (p. ej.
   si se necesitara recortar un asset concreto en vez de reposicionarlo)
 - Cache en memoria por ejecución del job, clave `{srcW}x{srcH}_to_{targetW}x{targetH}`:

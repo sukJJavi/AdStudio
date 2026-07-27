@@ -114,9 +114,10 @@ function sanitizeHtml(html: string): string {
 /**
  * Genera el HTML5 de producción de un banner llamando a Claude UNA VEZ por
  * proyecto (el master, ver trigger/render-master.ts). Las adaptaciones a otros
- * formatos parten de este HTML pero hacen su propia llamada a Claude —
- * `adaptHtml5ToFormatWithClaude`, una por formato — para recomponer el layout
- * en vez de reescalar mecánicamente (ver trigger/render-adaptations.ts).
+ * formatos parten de este HTML pero hacen su propia llamada a Claude Vision —
+ * `adaptHtml5WithVision`, una por formato — para recomponer el layout sobre
+ * un background generado con Replicate FLUX en vez de reescalar mecánicamente
+ * (Opción A: Browserless + FLUX + Claude, ver trigger/render-adaptations.ts).
  */
 export async function generateHtml5Master(
   projectId: string,
@@ -173,43 +174,54 @@ function imageContentBlock(mediaType: "image/jpeg" | "image/png", buffer: Buffer
   return { type: "image", source: { type: "base64", media_type: mediaType, data: buffer.toString("base64") } };
 }
 
-/** JPG de respaldo del master ya generado (trigger/render-master.ts) + sus dimensiones reales. */
-export type MasterFallbackReference = { buffer: Buffer; width: number; height: number };
+/**
+ * Clasificaciones cuyo contenido visual ya viene resuelto en el background
+ * outpainted (Opción A): no se piden a Claude como assets sueltos a
+ * posicionar, solo el resto (textos, logos, CTAs, decorativos).
+ */
+const BACKGROUND_CLASSIFICATIONS = new Set(["fondo", "imagen_principal"]);
 
 /**
- * Adapta el HTML5 del master a otro formato IAB con una llamada a Claude
- * VISION por formato (trigger/render-adaptations.ts). A diferencia de la
- * primera versión (solo texto: HTML + lista de filenames), Claude ahora VE el
- * fallback.jpg del master y cada asset individual como imagen — puede
- * recomponer el layout con criterio visual real en vez de adivinar posiciones
- * a partir de nombres de fichero y números. Los assets (PNG/JPG) son los
- * mismos del master; Claude decide cómo posicionarlos, no se recortan ni
- * regeneran (smart crop, lib/render/smart-crop.ts, no se usa aquí).
+ * Adapta el HTML5 del master a otro formato IAB — Opción A: Browserless
+ * (render real del master) + Replicate FLUX (outpainting del background) +
+ * Claude Vision (posicionamiento del resto de assets), ver
+ * trigger/render-adaptations.ts. A diferencia de adaptar solo con Claude,
+ * aquí Claude ve tres cosas: cómo se ve el master renderizado de verdad, el
+ * background ya generado para el nuevo formato (que referenciará como
+ * `background.jpg`, sin pedírselo como asset a reposicionar), y cada asset de
+ * primer plano (texto/logo/CTA/decorativo) suelto para colocarlo con
+ * criterio visual.
  */
-export async function adaptHtml5ToFormatWithClaude(
+export async function adaptHtml5WithVision(
   masterHtml: string,
+  masterRendered: Buffer,
+  masterFormat: { width: number; height: number },
+  outpaintedBackground: Buffer,
   assets: ProjectAsset[],
-  targetFormat: Html5FormatSpec,
   assetBuffers: Map<string, Buffer>,
-  masterFallback: MasterFallbackReference,
+  targetFormat: Html5FormatSpec,
 ): Promise<string> {
-  const descriptors = usableAssetDescriptors(assets);
+  const nonBgAssets = assets.filter((a) => !a.discarded && !BACKGROUND_CLASSIFICATIONS.has(a.classification ?? ""));
 
-  const assetImageBlocks: AdaptContentBlock[] = descriptors.flatMap((d) => {
-    const buffer = assetBuffers.get(d.filename);
+  const assetImageBlocks: AdaptContentBlock[] = nonBgAssets.flatMap((asset) => {
+    const filename = assetFilename(asset);
+    if (!filename) return [];
+    const buffer = assetBuffers.get(filename);
     if (!buffer) return [];
-    const dims = d.layer_bounds ? `${d.layer_bounds.width}x${d.layer_bounds.height}px` : "dimensiones desconocidas";
-    return [textContentBlock(`${d.filename} (${dims}):`), imageContentBlock(imageMediaTypeFor(d.filename), buffer)];
+    return [
+      textContentBlock(`${filename} — clasificación: ${asset.classification ?? "desconocido"}`),
+      imageContentBlock(imageMediaTypeFor(filename), buffer),
+    ];
   });
 
   const instructions = [
-    "HTML5 del master para referencia de animación y estructura:",
+    "HTML del master (referencia de animación y estructura):",
     masterHtml,
     "",
-    `Adapta este banner a ${targetFormat.width}x${targetFormat.height}px.`,
-    "Tienes acceso visual a todos los assets y al master.",
-    "Toma las decisiones creativas necesarias para que la pieza funcione profesionalmente en este formato.",
-    "Usa los mismos filenames de assets que el master.",
+    `Genera el HTML5 para ${targetFormat.width}x${targetFormat.height}px.`,
+    "El background es 'background.jpg' (el outpainted que ya tienes).",
+    "Posiciona los demás assets con criterio profesional.",
+    "Mantén la animación del master adaptada al nuevo formato.",
     "Respeta las zonas seguras IAB (10px mínimo), mantén el mismo clickTag que el master, y el #ad con border: 1px solid #000 y exactamente " +
       `${targetFormat.width}x${targetFormat.height}px.`,
     "NUNCA uses reglas CSS globales como '#ad img{width:100%}'.",
@@ -218,10 +230,14 @@ export async function adaptHtml5ToFormatWithClaude(
 
   const content: AdaptContentBlock[] = [
     textContentBlock(
-      `Eres un productor experto en publicidad digital HTML5 con 20 años de experiencia adaptando campañas de display IAB.\nEste es el banner master (${masterFallback.width}x${masterFallback.height}px):`,
+      `Eres un productor experto en publicidad digital HTML5.\nAquí tienes el banner master original (${masterFormat.width}x${masterFormat.height}px):`,
     ),
-    imageContentBlock("image/jpeg", masterFallback.buffer),
-    textContentBlock("Estos son los assets individuales disponibles:"),
+    imageContentBlock("image/png", masterRendered),
+    textContentBlock(
+      `Este es el background ya generado y adaptado para el formato ${targetFormat.width}x${targetFormat.height}px. Se usará como 'background.jpg' en el HTML:`,
+    ),
+    imageContentBlock("image/png", outpaintedBackground),
+    textContentBlock("Assets adicionales (textos, logos, CTAs) que debes posicionar:"),
     ...assetImageBlocks,
     textContentBlock(instructions),
   ];

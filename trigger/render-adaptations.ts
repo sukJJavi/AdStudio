@@ -1,11 +1,13 @@
 import { task, metadata } from "@trigger.dev/sdk/v3";
+import sharp from "sharp";
 import { createTriggerSupabaseClient } from "@/lib/supabase/trigger-client";
 import { getIABFormatById, type IABFormat } from "@/lib/iab/specs";
 import { unblockedFormats } from "@/lib/iab/incident-analyzer";
 import { downloadAsset, pickLargestBy } from "@/lib/render/assets";
-import { adaptHtml5ToFormatWithClaude, type MasterFallbackReference } from "@/lib/render/html5-generator";
+import { adaptHtml5WithVision } from "@/lib/render/html5-generator";
 import { getHtml5Master } from "@/lib/render/html5-cache";
-import { renderFallbackFromFrame } from "@/lib/render/fallback-composite";
+import { renderHtmlToImage } from "@/lib/render/browserless-renderer";
+import { outpaintToFormat } from "@/lib/render/replicate-outpainting";
 import { exportBufferFor, exportFilenameFor } from "@/lib/render/export-format";
 import {
   buildManifestJson,
@@ -28,42 +30,24 @@ function assetFilename(asset: ProjectAsset): string | null {
 }
 
 /**
- * Carga el fallback.jpg del master (referencia visual para Claude en cada
- * adaptación) desde adstudio_masters.jpg_path — la fila is_primary, o
- * cualquiera si no hay ninguna marcada. Si la fila o el fichero no existen,
- * lo compone al vuelo con las capas reales del proyecto (mismo criterio que
- * render-master.ts, sin Claude Vision).
+ * Clasificaciones cuyo PNG queda reemplazado por el background outpainted en
+ * el ZIP de cada adaptación (mismo criterio que BACKGROUND_CLASSIFICATIONS en
+ * lib/render/html5-generator.ts).
  */
-async function loadMasterFallback(
-  projectId: string,
-  masterSpec: { ancho: number; alto: number },
-  allAssets: ProjectAsset[],
-  supabase: ReturnType<typeof createTriggerSupabaseClient>,
-): Promise<MasterFallbackReference> {
-  const { data: masterRows } = await supabase
-    .from("adstudio_masters")
-    .select("jpg_path, width, height, is_primary")
-    .eq("project_id", projectId)
-    .order("is_primary", { ascending: false });
+const BACKGROUND_CLASSIFICATIONS = new Set(["fondo", "imagen_principal"]);
 
-  const masterRow = masterRows?.[0];
-
-  if (masterRow?.jpg_path) {
-    const buffer = await downloadAsset(supabase, masterRow.jpg_path);
-    if (buffer) return { buffer, width: masterRow.width, height: masterRow.height };
-  }
-
-  const buffer = await renderFallbackFromFrame(
-    projectId,
-    { width: masterSpec.ancho, height: masterSpec.alto },
-    allAssets,
-    supabase,
-  );
-  return { buffer, width: masterSpec.ancho, height: masterSpec.alto };
-}
-
+/**
+ * Opción A — adaptaciones profesionales: Browserless (render real del master)
+ * + Replicate FLUX (outpainting del background) + Claude Vision
+ * (posicionamiento del resto de assets). Reemplaza el reescalado mecánico y
+ * la adaptación solo-con-Claude anteriores.
+ */
 export const renderAdaptations = task({
   id: "render-adaptations",
+  // Cada formato cuesta ~20-30s (Replicate + Claude); con 7 formatos el job
+  // puede tardar 3-4 minutos, por encima del maxDuration global de
+  // trigger.config.ts (300s) — se sube a 10 minutos para este job en concreto.
+  maxDuration: 600,
   run: async (payload: RenderAdaptationsPayload) => {
     const supabase = createTriggerSupabaseClient();
 
@@ -93,10 +77,10 @@ export const renderAdaptations = task({
     );
 
     // El formato master no se "adapta" a sí mismo — se excluye del loop de
-    // abajo y su fallback.jpg sirve de referencia visual para Claude en cada
-    // adaptación (ver loadMasterFallback). Mismo criterio que lib/master.ts /
-    // trigger/render-master.ts: el marcado is_master, o el de mayor área si
-    // ninguno lo está (planes creados antes de ese campo).
+    // abajo y su render (Browserless) sirve de referencia visual para Claude
+    // y de imagen base para el outpainting de FLUX. Mismo criterio que
+    // lib/master.ts / trigger/render-master.ts: el marcado is_master, o el de
+    // mayor área si ninguno lo está (planes creados antes de ese campo).
     const masterEntry = allFormatsWithSpec.find((x) => x.format.is_master) ?? allFormatsWithSpec[0];
 
     if (!masterEntry) {
@@ -118,12 +102,11 @@ export const renderAdaptations = task({
     metadata.set("progress", 0.05);
 
     // Los assets (PNG/JPG) son los mismos del master en todos los formatos: se
-    // descargan una única vez y se reutilizan en el ZIP de cada pieza tal
-    // cual. Claude decide en el HTML5 cómo posicionarlos para cada formato —
-    // no hay smart crop ni regeneración de assets en este job (ver
-    // lib/render/smart-crop.ts, que queda sin uso aquí para uso futuro). El
-    // PNG original en Storage nunca cambia; la conversión a JPG
-    // (export_as_jpg) se aplica aquí, al construir el ZIP, igual que en
+    // descargan una única vez. Los clasificados fondo/imagen_principal se
+    // sustituyen por el background outpainted en el ZIP de cada adaptación
+    // (backgroundFilenames más abajo); el resto (texto/logo/CTA/decorativo) se
+    // reutiliza tal cual. El PNG original en Storage nunca cambia; la
+    // conversión a JPG (export_as_jpg) se aplica aquí, igual que en
     // trigger/render-master.ts.
     const pngEntries = (
       await Promise.all(
@@ -142,15 +125,28 @@ export const renderAdaptations = task({
       )
     ).filter((entry): entry is { filename: string; buffer: Buffer } => entry != null);
 
-    // Mismos buffers que pngEntries, indexados por filename: Claude Vision los
-    // recibe como imágenes en el mensaje de cada adaptación (ver
-    // adaptHtml5ToFormatWithClaude) — no se vuelven a descargar por formato.
+    // Claude Vision recibe estos mismos buffers como imágenes (assetBuffers,
+    // ver adaptHtml5WithVision) — no se vuelven a descargar por formato.
     const assetBuffers = new Map(pngEntries.map((entry) => [entry.filename, entry.buffer]));
 
-    metadata.set("step", "cargando-fallback-del-master");
+    const backgroundFilenames = new Set(
+      allAssets
+        .filter((a) => !a.discarded && BACKGROUND_CLASSIFICATIONS.has(a.classification ?? ""))
+        .flatMap((a) => {
+          const filename = assetFilename(a);
+          return filename ? [exportFilenameFor(filename, !!a.export_as_jpg)] : [];
+        }),
+    );
+    const nonBackgroundPngEntries = pngEntries.filter((entry) => !backgroundFilenames.has(entry.filename));
+
+    metadata.set("step", "renderizando-master-con-browserless");
     metadata.set("progress", 0.1);
 
-    const masterFallback = await loadMasterFallback(payload.projectId, masterEntry.spec, allAssets, supabase);
+    // El master no cambia entre formatos: se renderiza UNA VEZ con
+    // Browserless (no dentro del loop) y se reutiliza como referencia visual
+    // para Claude y como imagen base para el outpainting de cada formato.
+    console.log("Renderizando master con Browserless...");
+    const masterRendered = await renderHtmlToImage(masterHtml, masterEntry.spec.ancho, masterEntry.spec.alto);
 
     const zipEntries: ZipFileEntry[] = [];
     const manifestPieces: ManifestPieceEntry[] = [];
@@ -159,36 +155,39 @@ export const renderAdaptations = task({
 
     for (let i = 0; i < formatsToProduce.length; i++) {
       const { format, spec } = formatsToProduce[i];
-      const stepLabel = `Adaptando ${format.nombre_soporte} ${spec.ancho}x${spec.alto} (${i + 1} de ${total})`;
+      const n = i + 1;
+      const stepLabel = `Adaptando ${format.nombre_soporte} ${spec.ancho}x${spec.alto} (${n} de ${total})`;
 
       metadata.set("step", stepLabel);
-      metadata.set("current", i + 1);
+      metadata.set("current", n);
       metadata.set("total", total);
       metadata.set("progress", i / total);
 
       await supabase.from("adstudio_formats").update({ status: "producing" }).eq("id", format.id);
 
       try {
-        // Una llamada a Claude Vision por formato: recompone el layout
-        // completo del master para las nuevas dimensiones viendo el
-        // fallback.jpg del master y cada asset como imagen, no solo texto —
-        // ver lib/render/html5-generator.ts:adaptHtml5ToFormatWithClaude.
-        const adaptedHtml = await adaptHtml5ToFormatWithClaude(
-          masterHtml,
-          allAssets,
-          { width: spec.ancho, height: spec.alto, iabFormat: format.iab_format },
-          assetBuffers,
-          masterFallback,
+        console.log(`Formato ${n}/${total}: outpainting con FLUX...`);
+        const outpainted = await outpaintToFormat(
+          masterRendered,
+          masterEntry.spec.ancho,
+          masterEntry.spec.alto,
+          spec.ancho,
+          spec.alto,
         );
 
-        // El fallback.jpg se compone con sharp igual que el master (capas
-        // reales del frame del CTA + persistentes) — sin Claude Vision ni
-        // smart crop, solo cambian las dimensiones del canvas.
-        const fallbackJpg = await renderFallbackFromFrame(
-          payload.projectId,
-          { width: spec.ancho, height: spec.alto },
+        // background.jpg / fallback.jpg: el outpainted ya es una imagen
+        // correcta del formato (no hace falta componer capas con sharp).
+        const backgroundJpg = await sharp(outpainted).jpeg({ quality: 85 }).toBuffer();
+
+        console.log(`Formato ${n}/${total}: generando HTML5...`);
+        const adaptedHtml = await adaptHtml5WithVision(
+          masterHtml,
+          masterRendered,
+          { width: masterEntry.spec.ancho, height: masterEntry.spec.alto },
+          outpainted,
           allAssets,
-          supabase,
+          assetBuffers,
+          { width: spec.ancho, height: spec.alto, iabFormat: format.iab_format },
         );
 
         const basePath = `${payload.projectId}/adaptations/${format.iab_format}`;
@@ -199,7 +198,10 @@ export const renderAdaptations = task({
             .upload(`${basePath}/index.html`, adaptedHtml, { contentType: "text/html", upsert: true }),
           supabase.storage
             .from("adstudio-projects")
-            .upload(`${basePath}/fallback.jpg`, fallbackJpg, { contentType: "image/jpeg", upsert: true }),
+            .upload(`${basePath}/background.jpg`, backgroundJpg, { contentType: "image/jpeg", upsert: true }),
+          supabase.storage
+            .from("adstudio-projects")
+            .upload(`${basePath}/fallback.jpg`, backgroundJpg, { contentType: "image/jpeg", upsert: true }),
         ]);
 
         // "ready" (no "producido"): es el valor de FormatStatus que ya
@@ -208,17 +210,17 @@ export const renderAdaptations = task({
         // nuevo rompería esas vistas sin aportar nada.
         await supabase.from("adstudio_formats").update({ status: "ready" }).eq("id", format.id);
 
-        // La pieza se genera UNA SOLA VEZ arriba (HTML adaptado + assets del
-        // master + fallback.jpg); aquí solo se copian esos mismos buffers a la
-        // carpeta de cada medio que necesita este tamaño
+        // La pieza se genera UNA SOLA VEZ arriba; aquí solo se copian esos
+        // mismos buffers a la carpeta de cada medio que necesita este tamaño
         // (adstudio_formats.soportes — dedupe por tamaño, no por soporte+tamaño).
         const pieceFolders = pieceFoldersFor(format);
         for (const pieceFolder of pieceFolders) {
           zipEntries.push({ path: `${pieceFolder}/index.html`, content: adaptedHtml });
-          for (const png of pngEntries) {
+          zipEntries.push({ path: `${pieceFolder}/background.jpg`, content: backgroundJpg });
+          for (const png of nonBackgroundPngEntries) {
             zipEntries.push({ path: `${pieceFolder}/${png.filename}`, content: png.buffer });
           }
-          zipEntries.push({ path: `${pieceFolder}/fallback.jpg`, content: fallbackJpg });
+          zipEntries.push({ path: `${pieceFolder}/fallback.jpg`, content: backgroundJpg });
         }
 
         manifestPieces.push({
@@ -226,7 +228,7 @@ export const renderAdaptations = task({
           iabFormat: format.iab_format,
           width: spec.ancho,
           height: spec.alto,
-          jpgSizeBytes: fallbackJpg.byteLength,
+          jpgSizeBytes: backgroundJpg.byteLength,
           htmlSizeBytes: Buffer.byteLength(adaptedHtml, "utf8"),
           incidencias: format.incidencias ?? [],
           soportes: format.soportes ?? [],
