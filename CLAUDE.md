@@ -96,9 +96,14 @@ adaptaciones por formato, animación y exportación.
                           BACKGROUND_CLASSIFICATIONS excluye fondo/imagen_principal) y el HTML del master como
                           texto. Claude solo decide dónde va CADA ELEMENTO DE PRIMER PLANO, no recompone el
                           fondo (eso ya lo hizo FLUX)
-    /browserless-renderer.ts → renderHtmlToImage: screenshot PNG de un HTML5 vía browserless.io — referencia
-                          visual real del master (con animación en el frame inicial) para Claude Vision y
-                          para el outpainting de FLUX
+    /browserless-renderer.ts → renderHtmlToImage(projectId, width, height): conecta por WebSocket a un
+                          Chrome remoto de browserless.io y navega a `/api/preview/[projectId]` (la misma
+                          ruta pública del iframe del master) para que los assets (`src` relativos) resuelvan
+                          de verdad contra Storage — un HTML servido inline (`setContent`) no tiene origen
+                          detrás y sale con las imágenes rotas. Screenshot PNG = referencia visual real del
+                          master (con animación en el frame inicial) para Claude Vision y para el outpainting
+                          de FLUX. Requiere NEXT_PUBLIC_APP_URL configurada (no hay request entrante de la
+                          que derivar el origen dentro de un job de Trigger.dev)
     /replicate-outpainting.ts → outpaintToFormat: genera el background adaptado a un formato con Replicate
                           FLUX. Ratio similar (<15% de diferencia) → FLUX Redux (reencuadre/variación); ratio
                           muy distinto → canvas del tamaño destino con el master centrado + FLUX Fill

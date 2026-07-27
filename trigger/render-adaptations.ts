@@ -146,7 +146,7 @@ export const renderAdaptations = task({
     // Browserless (no dentro del loop) y se reutiliza como referencia visual
     // para Claude y como imagen base para el outpainting de cada formato.
     console.log("Renderizando master con Browserless...");
-    const masterRendered = await renderHtmlToImage(masterHtml, masterEntry.spec.ancho, masterEntry.spec.alto);
+    const masterRendered = await renderHtmlToImage(payload.projectId, masterEntry.spec.ancho, masterEntry.spec.alto);
 
     const zipEntries: ZipFileEntry[] = [];
     const manifestPieces: ManifestPieceEntry[] = [];
