@@ -84,8 +84,8 @@ export async function triggerMasterGeneration(
   // Regenerar (proyecto ya en master_ready/approved) debe limpiar el HTML5
   // cacheado igual que la primera generación: si el job falla a mitad, el
   // preview no debe seguir sirviendo el master_html viejo como si fuera el
-  // nuevo. adaptHtml5ToFormat/getHtml5Master (trigger/render-adaptations.ts)
-  // ya tratan null como "no hay master generado todavía".
+  // nuevo. getHtml5Master (trigger/render-adaptations.ts) ya trata null como
+  // "no hay master generado todavía".
   await supabase
     .from("adstudio_projects")
     .update({ status: "master_generating", master_run_id: handle.id, master_html: null })

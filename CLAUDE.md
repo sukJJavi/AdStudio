@@ -65,8 +65,11 @@ adaptaciones por formato, animación y exportación.
   /render-master.ts   → job: JPG/PNG de respaldo (Satori+Resvg, aplica font_primary) + HTML5 del master vía
                           Claude (1 sola llamada, ver html5-generator.ts) + ZIP (index.html + PNGs de capas +
                           fallback.jpg) subido a {project_id}/master/master.zip
-  /render-adaptations.ts → job: todos los formatos no bloqueados → fallback.jpg (Satori+Resvg) + HTML5
-                          adaptado del master (adaptHtml5ToFormat, sin llamar a Claude) → ZIP global
+  /render-adaptations.ts → job: todos los formatos no bloqueados → HTML5 adaptado del master con 1 llamada
+                          a Claude por formato (adaptHtml5ToFormatWithClaude, recompone el layout completo,
+                          no reescala el #ad mecánicamente) + fallback.jpg compuesto con sharp igual que el
+                          master (renderFallbackFromFrame, sin Claude Vision) → ZIP global, una carpeta por
+                          medio en adstudio_formats.soportes (pieceFoldersFor en lib/export/zip.ts)
 
 /lib
   /iab                → specs IAB (dimensiones, pesos, zonas seguras) + análisis de incidencias
@@ -80,10 +83,14 @@ adaptaciones por formato, animación y exportación.
                           usado solo para el fallback.jpg — no interviene en el HTML5
     /html5-generator.ts → generateHtml5Master: 1 llamada a Claude por proyecto (el master), genera el HTML5
                           de producción (assets referenciados por filename externo, nunca en base64) —
-                          ver prompt de agente en el propio fichero. adaptHtml5ToFormat: adapta ese HTML a
-                          otro formato IAB (dimensiones del #ad + meta ad.size) SIN llamar a Claude
+                          ver prompt de agente en el propio fichero. adaptHtml5ToFormatWithClaude: 1 llamada
+                          a Claude POR FORMATO de adaptación — recibe el HTML5 completo del master y lo
+                          recompone para las nuevas dimensiones (layout, no solo el tamaño del #ad); los
+                          assets son los mismos del master, Claude decide cómo posicionarlos
     /html5-cache.ts     → saveHtml5Master/getHtml5Master: cachea el HTML5 del master en
-                          adstudio_projects.master_html para que las adaptaciones no vuelvan a llamar a Claude
+                          adstudio_projects.master_html — evita volver a llamar a Claude para regenerar el
+                          master en cada adaptación (cada adaptación sí llama a Claude una vez, para
+                          recomponer el layout a su propio formato)
     /animation-guide.ts → lee la guía de animación (.txt) subida por el usuario, para pasarla a Claude
   /animation          → preset de animación GSAP por defecto (legacy, sin uso desde el nuevo html5-generator)
   /export             → generador de ZIP (in-memory, archiver) + manifest
@@ -162,11 +169,12 @@ Single-context layout: `CONTEXT.md` + `docs/adr/` at the repo root, created lazi
 - Cada job de Trigger.dev reporta progreso por paso (no solo inicio/fin)
 - El link de aprobación es un UUID en /approve/[token], sin login
 - El ZIP se nombra `{cliente}_{producto}_adaptaciones.zip`, con esta estructura interna:
-  `{cliente}_{producto}/manifest.json` y
-  `{cliente}_{producto}/{nombre_soporte}_{iab_format}/index.html|{filename}.png (uno por capa)|fallback.jpg`
-  (los PNGs son los mismos del master en todos los formatos — el escalado por formato queda para una
-  iteración posterior, ver adaptHtml5ToFormat en html5-generator.ts). El ZIP del master
-  (`{project_id}/master/master.zip`) sigue la misma estructura sin subcarpeta por pieza.
+  `{cliente}_{producto}/manifest.json` y, por cada medio en `adstudio_formats.soportes` (o `nombre_soporte`
+  si no hay ninguno, ver Bloque 10):
+  `{cliente}_{producto}/{medio}/{iab_format}/index.html|{filename}.png (uno por capa)|fallback.jpg`
+  (los PNGs son los mismos del master en todos los formatos — Claude decide cómo posicionarlos en el HTML5
+  de cada formato, ver adaptHtml5ToFormatWithClaude en html5-generator.ts; no se recortan ni escalan). El
+  ZIP del master (`{project_id}/master/master.zip`) sigue la misma estructura sin subcarpeta por pieza.
 - manifest.json incluye: dimensiones, peso (JPG y HTML), versión, fecha, incidencias por pieza
 - Nunca bloquear el proyecto completo por un formato con incidencia crítica
 
@@ -201,15 +209,16 @@ Single-context layout: `CONTEXT.md` + `docs/adr/` at the repo root, created lazi
   usuario ya haya editado a mano en el brief tras una importación anterior — solo actualiza
   `peso_max_kb`. El usuario puede corregir cualquier campo del formato detectado antes de analizar el PSD
 
-## Smart Crop (adaptaciones)
-- `lib/render/smart-crop.ts`: reencuadra con Claude Vision las capas que no
-  pueden escalarse directo a un formato de proporción muy distinta a la del
-  master. Con diferencia de proporción < 20% hace un resize/cover directo con
-  Sharp, sin llamar a Claude
-- Solo aplica a capas `classification === 'imagen_principal'` o `'fondo'`
-  (`SMART_CROP_CLASSIFICATIONS` en `trigger/render-adaptations.ts`) — el resto
-  (textos, logos, CTAs, decorativos) se posiciona vía CSS en el HTML5 y reutiliza
-  el PNG del master tal cual en todos los formatos, sin recorte
+## Smart Crop (sin uso actualmente, disponible para futuro)
+- `lib/render/smart-crop.ts`: reencuadra con Claude Vision una imagen para un
+  formato de proporción muy distinta a la original. Con diferencia de
+  proporción < 20% hace un resize/cover directo con Sharp, sin llamar a Claude
+- **No se usa en `trigger/render-adaptations.ts`**: desde que las adaptaciones
+  recomponen el layout completo con Claude (`adaptHtml5ToFormatWithClaude`,
+  ver arriba), los assets del master se reutilizan tal cual — es Claude quien
+  decide cómo posicionarlos en el HTML5 de cada formato, no hace falta
+  recortar el PNG. La función se mantiene para un posible uso futuro (p. ej.
+  si se necesitara recortar un asset concreto en vez de reposicionarlo)
 - Cache en memoria por ejecución del job, clave `{srcW}x{srcH}_to_{targetW}x{targetH}`:
   varios formatos con la misma proporción origen→destino no repiten la llamada
   a Claude Vision. Asume que imagen_principal y fondo no comparten exactamente

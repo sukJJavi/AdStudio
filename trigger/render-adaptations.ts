@@ -3,12 +3,10 @@ import { createTriggerSupabaseClient } from "@/lib/supabase/trigger-client";
 import { getIABFormatById, type IABFormat } from "@/lib/iab/specs";
 import { unblockedFormats } from "@/lib/iab/incident-analyzer";
 import { downloadAsset } from "@/lib/render/assets";
-import { adaptHtml5ToFormat } from "@/lib/render/html5-generator";
+import { adaptHtml5ToFormatWithClaude } from "@/lib/render/html5-generator";
 import { getHtml5Master } from "@/lib/render/html5-cache";
 import { renderFallbackFromFrame } from "@/lib/render/fallback-composite";
 import { exportBufferFor, exportFilenameFor } from "@/lib/render/export-format";
-import { smartCrop } from "@/lib/render/smart-crop";
-import sharp from "sharp";
 import {
   buildManifestJson,
   buildZipBuffer,
@@ -28,16 +26,6 @@ function assetFilename(asset: ProjectAsset): string | null {
   const filename = (asset.metadata as TextLayerMetadata | undefined)?.filename;
   return typeof filename === "string" && filename.trim() ? filename : null;
 }
-
-/**
- * Únicas clasificaciones que se recortan por formato (smart crop): son las que
- * pueden ocupar gran parte del canvas y sufren al escalarse directo a una
- * proporción muy distinta (mismo criterio que JPG_TOGGLE_CLASSIFICATIONS en
- * components/project/layers-editor.tsx). El resto (textos, logos, CTAs,
- * decorativos) se posiciona vía CSS en el HTML5 y no necesita reencuadre: se
- * reutiliza el PNG del master tal cual.
- */
-const SMART_CROP_CLASSIFICATIONS = new Set(["imagen_principal", "fondo"]);
 
 export const renderAdaptations = task({
   id: "render-adaptations",
@@ -72,52 +60,33 @@ export const renderAdaptations = task({
 
     const allAssets = (assets ?? []) as ProjectAsset[];
 
-    metadata.set("step", "descargando-pngs-del-master");
+    metadata.set("step", "descargando-assets-del-master");
     metadata.set("progress", 0.05);
 
-    const downloadableAssets = allAssets
-      .filter((a) => !a.discarded)
-      .flatMap((a) => {
-        const pngFilename = assetFilename(a);
-        return pngFilename && a.file_path ? [{ asset: a, pngFilename }] : [];
-      });
-
-    // Las capas imagen_principal/fondo se reencuadran por formato (smart crop,
-    // ver más abajo): su PNG no puede compartirse entre formatos como el resto.
-    const staticAssets = downloadableAssets.filter(({ asset }) => !SMART_CROP_CLASSIFICATIONS.has(asset.classification ?? ""));
-    const cropTargetAssets = downloadableAssets.filter(({ asset }) => SMART_CROP_CLASSIFICATIONS.has(asset.classification ?? ""));
-
-    // El resto de capas (textos, logos, CTAs, decorativos) se descarga una única
-    // vez y se reutiliza en el ZIP de cada formato tal cual. Fix 3: el PNG
-    // original en Storage nunca cambia — la conversión a JPG (export_as_jpg) se
-    // aplica aquí, al construir el ZIP, igual que en trigger/render-master.ts.
-    const staticPngEntries = (
+    // Los assets (PNG/JPG) son los mismos del master en todos los formatos: se
+    // descargan una única vez y se reutilizan en el ZIP de cada pieza tal
+    // cual. Claude decide en el HTML5 cómo posicionarlos para cada formato —
+    // no hay smart crop ni regeneración de assets en este job (ver
+    // lib/render/smart-crop.ts, que queda sin uso aquí para uso futuro). El
+    // PNG original en Storage nunca cambia; la conversión a JPG
+    // (export_as_jpg) se aplica aquí, al construir el ZIP, igual que en
+    // trigger/render-master.ts.
+    const pngEntries = (
       await Promise.all(
-        staticAssets.map(async ({ asset, pngFilename }) => {
-          const buffer = await downloadAsset(supabase, asset.file_path);
-          if (!buffer) return null;
-          const exported = await exportBufferFor(buffer, !!asset.export_as_jpg);
-          return { filename: exportFilenameFor(pngFilename, !!asset.export_as_jpg), buffer: exported };
-        }),
+        allAssets
+          .filter((a) => !a.discarded)
+          .flatMap((a) => {
+            const pngFilename = assetFilename(a);
+            return pngFilename && a.file_path ? [{ asset: a, pngFilename }] : [];
+          })
+          .map(async ({ asset, pngFilename }) => {
+            const buffer = await downloadAsset(supabase, asset.file_path);
+            if (!buffer) return null;
+            const exported = await exportBufferFor(buffer, !!asset.export_as_jpg);
+            return { filename: exportFilenameFor(pngFilename, !!asset.export_as_jpg), buffer: exported };
+          }),
       )
     ).filter((entry): entry is { filename: string; buffer: Buffer } => entry != null);
-
-    // Buffer + dimensiones reales de cada capa a reencuadrar, descargados una
-    // sola vez y reencuadrados con smartCrop() dentro del loop por formato.
-    const cropTargets = (
-      await Promise.all(
-        cropTargetAssets.map(async ({ asset, pngFilename }) => {
-          const buffer = await downloadAsset(supabase, asset.file_path);
-          if (!buffer) return null;
-          const { width, height } = await sharp(buffer).metadata();
-          if (!width || !height) return null;
-          return { asset, pngFilename, buffer, width, height };
-        }),
-      )
-    ).filter(
-      (entry): entry is { asset: ProjectAsset; pngFilename: string; buffer: Buffer; width: number; height: number } =>
-        entry != null,
-    );
 
     const zipEntries: ZipFileEntry[] = [];
     const manifestPieces: ManifestPieceEntry[] = [];
@@ -126,7 +95,7 @@ export const renderAdaptations = task({
 
     for (let i = 0; i < formatsToProduce.length; i++) {
       const { format, spec } = formatsToProduce[i];
-      const stepLabel = `Produciendo ${format.nombre_soporte} ${spec.ancho}x${spec.alto} (${i + 1} de ${total})`;
+      const stepLabel = `Adaptando ${format.nombre_soporte} ${spec.ancho}x${spec.alto} (${i + 1} de ${total})`;
 
       metadata.set("step", stepLabel);
       metadata.set("current", i + 1);
@@ -136,39 +105,24 @@ export const renderAdaptations = task({
       await supabase.from("adstudio_formats").update({ status: "producing" }).eq("id", format.id);
 
       try {
-        const adaptedHtml = adaptHtml5ToFormat(masterHtml, {
+        // Una llamada a Claude por formato: recompone el layout completo del
+        // master para las nuevas dimensiones (posiciones, tamaños, jerarquía
+        // visual), no un reescalado mecánico del #ad — ver
+        // lib/render/html5-generator.ts:adaptHtml5ToFormatWithClaude.
+        const adaptedHtml = await adaptHtml5ToFormatWithClaude(masterHtml, allAssets, {
           width: spec.ancho,
           height: spec.alto,
           iabFormat: format.iab_format,
         });
 
-        // Fix 2: el fallback.jpg se compone con las capas reales del frame del
-        // CTA (+ persistentes), no un render de Satori desde cero.
+        // El fallback.jpg se compone con sharp igual que el master (capas
+        // reales del frame del CTA + persistentes) — sin Claude Vision ni
+        // smart crop, solo cambian las dimensiones del canvas.
         const fallbackJpg = await renderFallbackFromFrame(
           payload.projectId,
           { width: spec.ancho, height: spec.alto },
           allAssets,
           supabase,
-        );
-
-        // Smart crop: imagen_principal/fondo se reencuadran para la proporción
-        // de este formato (Claude Vision si difiere mucho de la del master,
-        // resize directo si no — ver lib/render/smart-crop.ts). Si el reencuadre
-        // de una capa falla, se usa el master tal cual para esa capa en vez de
-        // tirar abajo la producción de todo el formato.
-        const croppedPngEntries = await Promise.all(
-          cropTargets.map(async ({ asset, pngFilename, buffer, width, height }) => {
-            let croppedBuffer: Buffer;
-            try {
-              const { buffer: smartCropped } = await smartCrop(buffer, width, height, spec.ancho, spec.alto);
-              croppedBuffer = smartCropped;
-            } catch (cropError) {
-              console.error(`Smart crop falló para ${pngFilename} en ${format.iab_format}, usando el master tal cual:`, cropError);
-              croppedBuffer = await sharp(buffer).resize(spec.ancho, spec.alto, { fit: "cover", position: "center" }).png().toBuffer();
-            }
-            const exported = await exportBufferFor(croppedBuffer, !!asset.export_as_jpg);
-            return { filename: exportFilenameFor(pngFilename, !!asset.export_as_jpg), buffer: exported };
-          }),
         );
 
         const basePath = `${payload.projectId}/adaptations/${format.iab_format}`;
@@ -182,16 +136,20 @@ export const renderAdaptations = task({
             .upload(`${basePath}/fallback.jpg`, fallbackJpg, { contentType: "image/jpeg", upsert: true }),
         ]);
 
+        // "ready" (no "producido"): es el valor de FormatStatus que ya
+        // consume el resto de la UI (p. ej. production-view.tsx cuenta
+        // producedCount por status === "ready") — introducir un literal
+        // nuevo rompería esas vistas sin aportar nada.
         await supabase.from("adstudio_formats").update({ status: "ready" }).eq("id", format.id);
 
-        // La pieza se genera UNA SOLA VEZ arriba (HTML, PNGs recortados, JPG de
-        // respaldo); aquí solo se copian esos mismos buffers a la carpeta de
-        // cada medio que necesita este tamaño (adstudio_formats.soportes —
-        // Bloque 10, dedupe por tamaño en vez de por soporte+tamaño).
+        // La pieza se genera UNA SOLA VEZ arriba (HTML adaptado + assets del
+        // master + fallback.jpg); aquí solo se copian esos mismos buffers a la
+        // carpeta de cada medio que necesita este tamaño
+        // (adstudio_formats.soportes — dedupe por tamaño, no por soporte+tamaño).
         const pieceFolders = pieceFoldersFor(format);
         for (const pieceFolder of pieceFolders) {
           zipEntries.push({ path: `${pieceFolder}/index.html`, content: adaptedHtml });
-          for (const png of [...staticPngEntries, ...croppedPngEntries]) {
+          for (const png of pngEntries) {
             zipEntries.push({ path: `${pieceFolder}/${png.filename}`, content: png.buffer });
           }
           zipEntries.push({ path: `${pieceFolder}/fallback.jpg`, content: fallbackJpg });

@@ -111,10 +111,11 @@ function sanitizeHtml(html: string): string {
 }
 
 /**
- * Genera el HTML5 de producción de un banner llamando a Claude UNA SOLA VEZ por
- * proyecto (el master). Las adaptaciones a otros formatos reutilizan este mismo
- * HTML vía `adaptHtml5ToFormat`, sin volver a llamar a Claude — ver
- * trigger/render-master.ts y trigger/render-adaptations.ts.
+ * Genera el HTML5 de producción de un banner llamando a Claude UNA VEZ por
+ * proyecto (el master, ver trigger/render-master.ts). Las adaptaciones a otros
+ * formatos parten de este HTML pero hacen su propia llamada a Claude —
+ * `adaptHtml5ToFormatWithClaude`, una por formato — para recomponer el layout
+ * en vez de reescalar mecánicamente (ver trigger/render-adaptations.ts).
  */
 export async function generateHtml5Master(
   projectId: string,
@@ -157,25 +158,71 @@ export async function generateHtml5Master(
 }
 
 /**
- * Adapta el HTML5 master a otro formato IAB sin volver a llamar a Claude:
- * solo reemplaza las dimensiones del `#ad` y el meta `ad.size`. Los PNGs
- * referenciados son los mismos del master (se resolverá el escalado por
- * formato en una iteración posterior).
+ * System prompt de la adaptación (trigger/render-adaptations.ts): a diferencia
+ * de generateHtml5Master, aquí Claude recibe el HTML5 completo del master y
+ * debe recomponer el layout para el nuevo formato, no solo reescalar el
+ * canvas — un banner de 300x600 no funciona con un resize mecánico a 728x90.
  */
-export function adaptHtml5ToFormat(masterHtml: string, targetFormat: Html5FormatSpec): string {
-  let html = masterHtml.replace(/(#ad\s*\{)([^}]*)(\})/i, (_match, open: string, body: string, close: string) => {
-    const updatedBody = body
-      .replace(/width\s*:\s*\d+px/i, `width: ${targetFormat.width}px`)
-      .replace(/height\s*:\s*\d+px/i, `height: ${targetFormat.height}px`);
-    return `${open}${updatedBody}${close}`;
+function buildAdaptSystemPrompt(targetWidth: number, targetHeight: number): string {
+  return `Eres un productor experto en publicidad digital HTML5 con 20 años de experiencia adaptando campañas de display IAB.
+
+Recibes el HTML5 de un banner master y debes adaptarlo a un nuevo formato manteniendo la identidad visual y la animación, pero recomponiendo el layout para que funcione en las nuevas dimensiones.
+
+REGLAS:
+- Usa exactamente los mismos filenames de assets que el master
+- Mantén la misma animación y timing del master
+- Recompón el layout: posiciones, tamaños, jerarquía visual
+- El texto debe ser legible en el nuevo formato
+- Respeta las zonas seguras IAB (10px mínimo)
+- El #ad debe tener exactamente ${targetWidth}x${targetHeight}px
+- border: 1px solid #000 en el #ad siempre
+- clickTag idéntico al master
+- NUNCA uses reglas CSS globales como '#ad img{width:100%}'
+
+Devuelve SOLO el HTML completo sin explicaciones ni bloques markdown, empezando con <!doctype html>`;
+}
+
+/** Líneas `filename: WxH` para el user message de la adaptación — mismo criterio de filename que el master (usableAssetDescriptors, con exportFilenameFor aplicado). */
+function assetDimensionLines(assets: ProjectAsset[]): string[] {
+  return usableAssetDescriptors(assets)
+    .filter((d) => d.layer_bounds != null)
+    .map((d) => `${d.filename}: ${d.layer_bounds!.width}x${d.layer_bounds!.height}px`);
+}
+
+/**
+ * Adapta el HTML5 del master a otro formato IAB con una llamada a Claude por
+ * formato (trigger/render-adaptations.ts): a diferencia del reescalado
+ * mecánico anterior, Claude recompone el layout completo — necesario porque
+ * un master de 300x600 no cabe razonablemente en, por ejemplo, 728x90 con
+ * solo cambiar las dimensiones del `#ad`. Los assets (PNG/JPG) son los mismos
+ * del master; Claude decide cómo posicionarlos, no se recortan ni regeneran.
+ */
+export async function adaptHtml5ToFormatWithClaude(
+  masterHtml: string,
+  assets: ProjectAsset[],
+  targetFormat: Html5FormatSpec,
+): Promise<string> {
+  const userMessage = [
+    "Master HTML:",
+    masterHtml,
+    "",
+    "Assets disponibles (filename → dimensiones reales):",
+    assetDimensionLines(assets).join("\n"),
+    "",
+    `Adapta este banner a ${targetFormat.width}x${targetFormat.height}px.`,
+    "Toma las decisiones creativas que necesites para que la pieza funcione correctamente en este formato.",
+  ].join("\n");
+
+  const client = createClaudeClient();
+  const response = await client.messages.create({
+    model: "claude-sonnet-4-6",
+    max_tokens: 8000,
+    system: buildAdaptSystemPrompt(targetFormat.width, targetFormat.height),
+    messages: [{ role: "user", content: userMessage }],
   });
 
-  html = html.replace(/<meta([^>]*name=["']ad\.size["'][^>]*)>/i, (_match, attrs: string) => {
-    const updatedAttrs = attrs
-      .replace(/width=\d+/i, `width=${targetFormat.width}`)
-      .replace(/height=\d+/i, `height=${targetFormat.height}`);
-    return `<meta${updatedAttrs}>`;
-  });
+  const textBlock = response.content.find((block) => block.type === "text");
+  const raw = textBlock && textBlock.type === "text" ? textBlock.text : "";
 
-  return html;
+  return ensureAdBorder(sanitizeHtml(stripCodeFence(raw)));
 }
