@@ -273,9 +273,17 @@ export function BriefForm({
    * parse-media-plan.ts (trigger/parse-media-plan.ts) corre en background tras el
    * upload — no hay endpoint de status para ese job, así que se hace polling
    * best-effort de /api/brief hasta ver más formatos o agotar los intentos.
+   *
+   * El job hace un upsert fila a fila (ver trigger/parse-media-plan.ts), así que
+   * el recuento de formatos cambia progresivamente mientras corre — pararse en
+   * el primer cambio respecto a baselineCount capturaba una foto a mitad (p. ej.
+   * 1 de 7 formatos) y se quedaba ahí. Por eso hace falta ver el mismo recuento
+   * en dos lecturas consecutivas (~2.5s aparte) antes de darlo por terminado.
    */
   async function pollForParsedFormats(baselineCount: number) {
     const maxAttempts = 12;
+    let previousCount: number | null = null;
+
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 2500));
       try {
@@ -284,11 +292,18 @@ export function BriefForm({
         const data = await res.json();
         const freshFormats = (data.formats ?? []) as ProjectFormat[];
         const freshExcluded = (data.project?.media_plan_excluded ?? []) as MediaPlanExcludedEntry[];
-        if (freshFormats.length !== baselineCount || attempt === maxAttempts - 1) {
+
+        const changedFromBaseline = freshFormats.length !== baselineCount;
+        const stableSincePreviousPoll = previousCount === freshFormats.length;
+        const isLastAttempt = attempt === maxAttempts - 1;
+
+        if (changedFromBaseline && (stableSincePreviousPoll || isLastAttempt)) {
           setRows(withDefaultMaster(freshFormats.length > 0 ? freshFormats.map(formatToRow) : rows));
           setExcludedFromMediaPlan(freshExcluded);
           return;
         }
+
+        previousCount = freshFormats.length;
       } catch {
         // Reintenta en el siguiente tick.
       }
