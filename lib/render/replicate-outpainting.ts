@@ -85,8 +85,28 @@ export async function outpaintToFormat(
     }
   } else {
     // Ratio muy diferente: canvas del tamaño destino con el master centrado,
-    // FLUX Fill extiende (outpainting) el resto.
+    // FLUX Fill extiende (outpainting) el resto. flux-fill-dev requiere
+    // image + mask (blanco = generar, negro = preservar).
+    const offsetX = Math.max(0, Math.round((targetWidth - Math.min(masterWidth, targetWidth)) / 2));
+    const offsetY = Math.max(0, Math.round((targetHeight - Math.min(masterHeight, targetHeight)) / 2));
+    const resizedMaster = await sharp(masterImageBuffer)
+      .resize(Math.min(masterWidth, targetWidth), Math.min(masterHeight, targetHeight), { fit: "inside" })
+      .toBuffer();
+    const resizedMeta = await sharp(resizedMaster).metadata();
+
     const canvasBuffer = await sharp({
+      create: {
+        width: targetWidth,
+        height: targetHeight,
+        channels: 3,
+        background: { r: 0, g: 0, b: 0 },
+      },
+    })
+      .composite([{ input: resizedMaster, left: offsetX, top: offsetY }])
+      .png()
+      .toBuffer();
+
+    const maskBuffer = await sharp({
       create: {
         width: targetWidth,
         height: targetHeight,
@@ -96,10 +116,18 @@ export async function outpaintToFormat(
     })
       .composite([
         {
-          input: await sharp(masterImageBuffer)
-            .resize(Math.min(masterWidth, targetWidth), Math.min(masterHeight, targetHeight), { fit: "inside" })
+          input: await sharp({
+            create: {
+              width: resizedMeta.width!,
+              height: resizedMeta.height!,
+              channels: 3,
+              background: { r: 0, g: 0, b: 0 },
+            },
+          })
+            .png()
             .toBuffer(),
-          gravity: "center",
+          left: offsetX,
+          top: offsetY,
         },
       ])
       .png()
@@ -107,17 +135,18 @@ export async function outpaintToFormat(
 
     // flux-fill-dev no acepta base64 directamente: mantiene el upload a
     // /v1/files y usa la URL del archivo.
-    const imageUrl = await uploadImageToReplicate(canvasBuffer, "image/png");
+    const imageUrl = await uploadImageToReplicate(canvasBuffer, "image/png", "canvas.png");
+    const maskUrl = await uploadImageToReplicate(maskBuffer, "image/png", "mask.png");
     console.log("Image URL subida a Replicate:", imageUrl.substring(0, 50));
 
     try {
       output = (await replicate.run("black-forest-labs/flux-fill-dev", {
         input: {
           image: imageUrl,
-          prompt: "advertising banner background, same style and colors as the original image, professional, seamless extension",
+          mask: maskUrl,
+          prompt: "advertising banner, same style colors and composition as the original, seamless natural extension, professional quality",
           num_inference_steps: 28,
-          guidance_scale: 30,
-          strength: 0.85,
+          guidance: 30,
           output_format: "png",
         },
       })) as string[];
