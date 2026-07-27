@@ -1,13 +1,11 @@
-import sharp from "sharp";
 import Replicate from "replicate";
+import { createClaudeClient } from "../claude/client";
 
-const replicate = new Replicate({ auth: process.env.REPLICATE_API_KEY! });
+const replicate = new Replicate({
+  auth: process.env.REPLICATE_API_KEY!,
+});
 
-async function uploadImageToReplicate(
-  buffer: Buffer,
-  mimeType: string,
-  filename: string = "image.png",
-): Promise<string> {
+async function uploadImageToReplicate(buffer: Buffer, mimeType: string, filename: string = "image.png"): Promise<string> {
   try {
     const formData = new FormData();
     const blob = new Blob([new Uint8Array(buffer)], { type: mimeType });
@@ -35,128 +33,83 @@ async function uploadImageToReplicate(
 }
 
 /**
- * Genera una imagen adaptada a un nuevo formato IAB a partir del render del
- * master (Opción A: Browserless + FLUX + Claude, ver
- * trigger/render-adaptations.ts). Con proporción similar (< 15% de diferencia)
- * usa FLUX Redux (variación/reencuadre); con proporción muy distinta compone
- * un canvas del tamaño destino con el master centrado y usa FLUX Fill
- * (outpainting) para extender el resto.
+ * Adapta una capa de imagen individual (background, imagen_principal) a un
+ * nuevo formato IAB con FLUX Kontext: mantiene el sujeto principal visible y
+ * deja espacio libre para el resto de assets (texto, logo, CTA), que Claude
+ * Vision posiciona por encima en trigger/render-adaptations.ts.
  */
-export async function outpaintToFormat(
-  masterImageBuffer: Buffer,
-  masterWidth: number,
-  masterHeight: number,
+export async function adaptImageAsset(
+  imageBuffer: Buffer,
+  sourceWidth: number,
+  sourceHeight: number,
   targetWidth: number,
   targetHeight: number,
 ): Promise<Buffer> {
-  console.log(
-    "Replicate auth presente:",
-    !!process.env.REPLICATE_API_KEY,
-    "longitud:",
-    process.env.REPLICATE_API_KEY?.length,
-  );
-
-  const aspectRatio = `${targetWidth}:${targetHeight}`;
-
-  const sourceRatio = masterWidth / masterHeight;
-  const targetRatio = targetWidth / targetHeight;
-  const ratioDiff = Math.abs(sourceRatio - targetRatio) / sourceRatio;
-
-  let output: string[];
-
-  if (ratioDiff < 0.15) {
-    // Ratio similar: FLUX Redux reencuadra/varía manteniendo la composición.
-    // redux_image va como data URI: la URL de /v1/files solo es accesible
-    // para el modelo durante la propia predicción de la subida, no sirve aquí.
-    const masterBase64 = `data:image/png;base64,${masterImageBuffer.toString("base64")}`;
-
-    try {
-      output = (await replicate.run("black-forest-labs/flux-redux-dev", {
-        input: {
-          redux_image: masterBase64,
-          aspect_ratio: aspectRatio,
-          num_inference_steps: 25,
-          guidance_scale: 3.5,
-        },
-      })) as string[];
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new Error(`Replicate failed: ${message}`);
-    }
-  } else {
-    // Ratio muy diferente: canvas del tamaño destino con el master centrado,
-    // FLUX Fill extiende (outpainting) el resto. flux-fill-dev requiere
-    // image + mask (blanco = generar, negro = preservar).
-    const offsetX = Math.max(0, Math.round((targetWidth - Math.min(masterWidth, targetWidth)) / 2));
-    const offsetY = Math.max(0, Math.round((targetHeight - Math.min(masterHeight, targetHeight)) / 2));
-    const resizedMaster = await sharp(masterImageBuffer)
-      .resize(Math.min(masterWidth, targetWidth), Math.min(masterHeight, targetHeight), { fit: "inside" })
-      .toBuffer();
-    const resizedMeta = await sharp(resizedMaster).metadata();
-
-    const canvasBuffer = await sharp({
-      create: {
-        width: targetWidth,
-        height: targetHeight,
-        channels: 3,
-        background: { r: 0, g: 0, b: 0 },
-      },
-    })
-      .composite([{ input: resizedMaster, left: offsetX, top: offsetY }])
-      .png()
-      .toBuffer();
-
-    const maskBuffer = await sharp({
-      create: {
-        width: targetWidth,
-        height: targetHeight,
-        channels: 3,
-        background: { r: 255, g: 255, b: 255 },
-      },
-    })
-      .composite([
+  // 1. Claude Vision identifica el sujeto principal.
+  let subjectDescription = "main visual subject";
+  try {
+    const visionResponse = await createClaudeClient().messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 100,
+      messages: [
         {
-          input: await sharp({
-            create: {
-              width: resizedMeta.width!,
-              height: resizedMeta.height!,
-              channels: 3,
-              background: { r: 0, g: 0, b: 0 },
+          role: "user",
+          content: [
+            {
+              type: "image",
+              source: {
+                type: "base64",
+                media_type: "image/png",
+                data: imageBuffer.toString("base64"),
+              },
             },
-          })
-            .png()
-            .toBuffer(),
-          left: offsetX,
-          top: offsetY,
+            {
+              type: "text",
+              text: "Describe in 10 words max the main subject of this image. Focus on people, products or key visual elements.",
+            },
+          ],
         },
-      ])
-      .png()
-      .toBuffer();
-
-    // flux-fill-dev no acepta base64 directamente: mantiene el upload a
-    // /v1/files y usa la URL del archivo.
-    const imageUrl = await uploadImageToReplicate(canvasBuffer, "image/png", "canvas.png");
-    const maskUrl = await uploadImageToReplicate(maskBuffer, "image/png", "mask.png");
-    console.log("Image URL subida a Replicate:", imageUrl.substring(0, 50));
-
-    try {
-      output = (await replicate.run("black-forest-labs/flux-fill-dev", {
-        input: {
-          image: imageUrl,
-          mask: maskUrl,
-          prompt: "advertising banner, same style colors and composition as the original, seamless natural extension, professional quality",
-          num_inference_steps: 28,
-          guidance: 30,
-          output_format: "png",
-        },
-      })) as string[];
-    } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
-      throw new Error(`Replicate failed: ${message}`);
+      ],
+    });
+    if (visionResponse.content[0].type === "text") {
+      subjectDescription = visionResponse.content[0].text;
     }
+  } catch {
+    // Si Claude Vision falla, continúa con descripción genérica.
   }
 
-  const resultUrl = Array.isArray(output) ? output[0] : output;
-  const imageResponse = await fetch(resultUrl as string);
-  return Buffer.from(await imageResponse.arrayBuffer());
+  console.log("Subject detected:", subjectDescription);
+  console.log("Adapting asset:", `${sourceWidth}x${sourceHeight} → ${targetWidth}x${targetHeight}`);
+
+  // 2. Sube imagen a Replicate.
+  const imageUrl = await uploadImageToReplicate(imageBuffer, "image/png", "asset.png");
+
+  // 3. FLUX Kontext adapta la imagen al nuevo formato.
+  try {
+    const output = await replicate.run("black-forest-labs/flux-kontext-pro", {
+      input: {
+        input_image: imageUrl,
+        prompt: `Reframe this advertising image from ${sourceWidth}x${sourceHeight}px
+to ${targetWidth}x${targetHeight}px.
+Main subject: ${subjectDescription}.
+Keep the main subject clearly visible and well-framed.
+Leave negative space for text overlay on sides or bottom.
+Maintain original colors, lighting and atmosphere.
+No text generation. No watermarks.`,
+        aspect_ratio: `${targetWidth}:${targetHeight}`,
+        output_format: "png",
+        safety_tolerance: 6,
+      },
+    });
+
+    const resultUrl = Array.isArray(output) ? output[0] : (output as unknown as string);
+    const imageResponse = await fetch(resultUrl);
+    if (!imageResponse.ok) {
+      throw new Error(`Download failed: ${imageResponse.status}`);
+    }
+    return Buffer.from(await imageResponse.arrayBuffer());
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Replicate adaptImageAsset failed: ${message}`);
+  }
 }

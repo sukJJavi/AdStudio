@@ -7,7 +7,8 @@ import { downloadAsset, pickLargestBy } from "@/lib/render/assets";
 import { adaptHtml5WithVision } from "@/lib/render/html5-generator";
 import { getHtml5Master } from "@/lib/render/html5-cache";
 import { renderHtmlToImage } from "@/lib/render/browserless-renderer";
-import { outpaintToFormat } from "@/lib/render/replicate-outpainting";
+import { adaptImageAsset } from "@/lib/render/replicate-outpainting";
+import { renderFallbackFromFrame } from "@/lib/render/fallback-composite";
 import { exportBufferFor, exportFilenameFor } from "@/lib/render/export-format";
 import {
   buildManifestJson,
@@ -30,17 +31,17 @@ function assetFilename(asset: ProjectAsset): string | null {
 }
 
 /**
- * Clasificaciones cuyo PNG queda reemplazado por el background outpainted en
- * el ZIP de cada adaptación (mismo criterio que BACKGROUND_CLASSIFICATIONS en
- * lib/render/html5-generator.ts).
+ * Clasificaciones cuya capa se reencuadra por formato con FLUX Kontext
+ * (lib/render/replicate-outpainting.ts:adaptImageAsset) antes de pasarla a
+ * Claude Vision — el resto de assets se reutiliza tal cual entre formatos.
  */
 const BACKGROUND_CLASSIFICATIONS = new Set(["fondo", "imagen_principal"]);
 
 /**
  * Opción A — adaptaciones profesionales: Browserless (render real del master)
- * + Replicate FLUX (outpainting del background) + Claude Vision
- * (posicionamiento del resto de assets). Reemplaza el reescalado mecánico y
- * la adaptación solo-con-Claude anteriores.
+ * + Replicate FLUX Kontext (reencuadre por asset de fondo/imagen_principal) +
+ * Claude Vision (posicionamiento de todos los assets, ya reencuadrados o no).
+ * Reemplaza el reescalado mecánico y la adaptación solo-con-Claude anteriores.
  */
 export const renderAdaptations = task({
   id: "render-adaptations",
@@ -129,15 +130,11 @@ export const renderAdaptations = task({
     // ver adaptHtml5WithVision) — no se vuelven a descargar por formato.
     const assetBuffers = new Map(pngEntries.map((entry) => [entry.filename, entry.buffer]));
 
-    const backgroundFilenames = new Set(
-      allAssets
-        .filter((a) => !a.discarded && BACKGROUND_CLASSIFICATIONS.has(a.classification ?? ""))
-        .flatMap((a) => {
-          const filename = assetFilename(a);
-          return filename ? [exportFilenameFor(filename, !!a.export_as_jpg)] : [];
-        }),
+    // Assets que se reencuadran por formato con FLUX Kontext antes de pasarlos
+    // a Claude Vision (ver loop más abajo) — el resto se reutiliza tal cual.
+    const cropTargets = allAssets.filter(
+      (a) => !a.discarded && BACKGROUND_CLASSIFICATIONS.has(a.classification ?? ""),
     );
-    const nonBackgroundPngEntries = pngEntries.filter((entry) => !backgroundFilenames.has(entry.filename));
 
     metadata.set("step", "renderizando-master-con-browserless");
     metadata.set("progress", 0.1);
@@ -166,28 +163,51 @@ export const renderAdaptations = task({
       await supabase.from("adstudio_formats").update({ status: "producing" }).eq("id", format.id);
 
       try {
-        console.log(`Formato ${n}/${total}: outpainting con FLUX...`);
-        const outpainted = await outpaintToFormat(
-          masterRendered,
-          masterEntry.spec.ancho,
-          masterEntry.spec.alto,
-          spec.ancho,
-          spec.alto,
-        );
+        console.log(`Formato ${n}/${total}: reencuadrando assets con FLUX Kontext...`);
 
-        // background.jpg / fallback.jpg: el outpainted ya es una imagen
-        // correcta del formato (no hace falta componer capas con sharp).
-        const backgroundJpg = await sharp(outpainted).jpeg({ quality: 85 }).toBuffer();
+        // Clon por formato: los buffers adaptados no deben filtrarse al resto
+        // de formatos ni al Map global (assetBuffers).
+        const formatAssetBuffers = new Map(assetBuffers);
+        // asset.id -> PNG ya adaptado, para renderFallbackFromFrame (evita
+        // descargar de Storage el original para estas capas).
+        const fallbackOverrides = new Map<string, Buffer>();
+
+        for (const asset of cropTargets) {
+          const pngFilename = assetFilename(asset);
+          if (!pngFilename || !asset.file_path) continue;
+
+          // Siempre desde el PNG original en Storage (nunca del buffer ya
+          // convertido a JPG en assetBuffers) — adaptImageAsset asume PNG.
+          const originalBuffer = await downloadAsset(supabase, asset.file_path);
+          if (!originalBuffer) continue;
+
+          const { width: srcWidth, height: srcHeight } = await sharp(originalBuffer).metadata();
+          if (!srcWidth || !srcHeight) continue;
+
+          const adaptedPng = await adaptImageAsset(originalBuffer, srcWidth, srcHeight, spec.ancho, spec.alto);
+          const adaptedExported = await exportBufferFor(adaptedPng, !!asset.export_as_jpg);
+
+          formatAssetBuffers.set(exportFilenameFor(pngFilename, !!asset.export_as_jpg), adaptedExported);
+          fallbackOverrides.set(asset.id, adaptedPng);
+        }
 
         console.log(`Formato ${n}/${total}: generando HTML5...`);
         const adaptedHtml = await adaptHtml5WithVision(
           masterHtml,
           masterRendered,
           { width: masterEntry.spec.ancho, height: masterEntry.spec.alto },
-          outpainted,
           allAssets,
-          assetBuffers,
+          formatAssetBuffers,
           { width: spec.ancho, height: spec.alto, iabFormat: format.iab_format },
+        );
+
+        console.log(`Formato ${n}/${total}: componiendo fallback.jpg...`);
+        const fallbackJpg = await renderFallbackFromFrame(
+          payload.projectId,
+          { width: spec.ancho, height: spec.alto },
+          allAssets,
+          supabase,
+          fallbackOverrides,
         );
 
         const basePath = `${payload.projectId}/adaptations/${format.iab_format}`;
@@ -198,10 +218,7 @@ export const renderAdaptations = task({
             .upload(`${basePath}/index.html`, adaptedHtml, { contentType: "text/html", upsert: true }),
           supabase.storage
             .from("adstudio-projects")
-            .upload(`${basePath}/background.jpg`, backgroundJpg, { contentType: "image/jpeg", upsert: true }),
-          supabase.storage
-            .from("adstudio-projects")
-            .upload(`${basePath}/fallback.jpg`, backgroundJpg, { contentType: "image/jpeg", upsert: true }),
+            .upload(`${basePath}/fallback.jpg`, fallbackJpg, { contentType: "image/jpeg", upsert: true }),
         ]);
 
         // "ready" (no "producido"): es el valor de FormatStatus que ya
@@ -213,14 +230,18 @@ export const renderAdaptations = task({
         // La pieza se genera UNA SOLA VEZ arriba; aquí solo se copian esos
         // mismos buffers a la carpeta de cada medio que necesita este tamaño
         // (adstudio_formats.soportes — dedupe por tamaño, no por soporte+tamaño).
+        const formatPngEntries = pngEntries.map((entry) => ({
+          filename: entry.filename,
+          buffer: formatAssetBuffers.get(entry.filename) ?? entry.buffer,
+        }));
+
         const pieceFolders = pieceFoldersFor(format);
         for (const pieceFolder of pieceFolders) {
           zipEntries.push({ path: `${pieceFolder}/index.html`, content: adaptedHtml });
-          zipEntries.push({ path: `${pieceFolder}/background.jpg`, content: backgroundJpg });
-          for (const png of nonBackgroundPngEntries) {
+          for (const png of formatPngEntries) {
             zipEntries.push({ path: `${pieceFolder}/${png.filename}`, content: png.buffer });
           }
-          zipEntries.push({ path: `${pieceFolder}/fallback.jpg`, content: backgroundJpg });
+          zipEntries.push({ path: `${pieceFolder}/fallback.jpg`, content: fallbackJpg });
         }
 
         manifestPieces.push({
@@ -228,7 +249,7 @@ export const renderAdaptations = task({
           iabFormat: format.iab_format,
           width: spec.ancho,
           height: spec.alto,
-          jpgSizeBytes: backgroundJpg.byteLength,
+          jpgSizeBytes: fallbackJpg.byteLength,
           htmlSizeBytes: Buffer.byteLength(adaptedHtml, "utf8"),
           incidencias: format.incidencias ?? [],
           soportes: format.soportes ?? [],

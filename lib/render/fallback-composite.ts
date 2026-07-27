@@ -36,12 +36,18 @@ function pngFilenameFor(layer: Pick<ProjectAsset, "metadata" | "layer_name">): s
  * re-renderiza el banner desde cero con Satori, así que el JPG de respaldo
  * se parece al banner real. Reduce calidad (85→75→...→30) hasta bajar de
  * 50KB; si ni con la calidad más baja lo consigue, devuelve esa.
+ *
+ * `assetOverrides` (asset.id → buffer PNG): capas ya adaptadas a `format`
+ * fuera de esta función (p. ej. fondo/imagen_principal adaptados con FLUX
+ * Kontext por formato en trigger/render-adaptations.ts) — se usan en vez de
+ * descargar el PNG original de Storage para esa capa.
  */
 export async function renderFallbackFromFrame(
   projectId: string,
   format: { width: number; height: number },
   assets: ProjectAsset[],
   supabase: SupabaseClient,
+  assetOverrides?: Map<string, Buffer>,
 ): Promise<Buffer> {
   // 1. Encontrar el frame del CTA.
   const ctaAsset = assets.find(
@@ -91,21 +97,25 @@ export async function renderFallbackFromFrame(
       continue;
     }
 
-    const storagePath = `${projectId}/layers/${pngFilename}`;
+    let layerBuffer = assetOverrides?.get(layer.id);
 
-    console.log("Intentando descargar:", storagePath);
-    const { data, error } = await supabase.storage.from("adstudio-projects").download(storagePath);
-    console.log("Resultado:", { ok: !!data, error: error?.message });
+    if (!layerBuffer) {
+      const storagePath = `${projectId}/layers/${pngFilename}`;
 
-    if (error || !data) {
-      console.error("Error descargando layer, se omite del fallback pero se sigue con el resto:", {
-        storagePath,
-        error,
-      });
-      continue;
+      console.log("Intentando descargar:", storagePath);
+      const { data, error } = await supabase.storage.from("adstudio-projects").download(storagePath);
+      console.log("Resultado:", { ok: !!data, error: error?.message });
+
+      if (error || !data) {
+        console.error("Error descargando layer, se omite del fallback pero se sigue con el resto:", {
+          storagePath,
+          error,
+        });
+        continue;
+      }
+
+      layerBuffer = Buffer.from(await data.arrayBuffer());
     }
-
-    const layerBuffer = Buffer.from(await data.arrayBuffer());
     const bounds = layer.layer_bounds;
     if (!bounds) continue;
 

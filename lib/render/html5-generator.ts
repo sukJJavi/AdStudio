@@ -175,35 +175,26 @@ function imageContentBlock(mediaType: "image/jpeg" | "image/png", buffer: Buffer
 }
 
 /**
- * Clasificaciones cuyo contenido visual ya viene resuelto en el background
- * outpainted (Opción A): no se piden a Claude como assets sueltos a
- * posicionar, solo el resto (textos, logos, CTAs, decorativos).
- */
-const BACKGROUND_CLASSIFICATIONS = new Set(["fondo", "imagen_principal"]);
-
-/**
  * Adapta el HTML5 del master a otro formato IAB — Opción A: Browserless
- * (render real del master) + Replicate FLUX (outpainting del background) +
- * Claude Vision (posicionamiento del resto de assets), ver
- * trigger/render-adaptations.ts. A diferencia de adaptar solo con Claude,
- * aquí Claude ve tres cosas: cómo se ve el master renderizado de verdad, el
- * background ya generado para el nuevo formato (que referenciará como
- * `background.jpg`, sin pedírselo como asset a reposicionar), y cada asset de
- * primer plano (texto/logo/CTA/decorativo) suelto para colocarlo con
- * criterio visual.
+ * (render real del master) + Replicate FLUX Kontext (reencuadre por asset de
+ * fondo/imagen_principal) + Claude Vision (posicionamiento de todos los
+ * assets), ver trigger/render-adaptations.ts. `assetBuffers` ya trae, para
+ * fondo/imagen_principal, el PNG adaptado a `targetFormat` (en vez del
+ * original del master) — Claude ve el master renderizado de verdad y cada
+ * asset suelto (ya adaptado o no) para componer el layout con criterio
+ * visual, sin distinguir background de primer plano.
  */
 export async function adaptHtml5WithVision(
   masterHtml: string,
   masterRendered: Buffer,
   masterFormat: { width: number; height: number },
-  outpaintedBackground: Buffer,
   assets: ProjectAsset[],
   assetBuffers: Map<string, Buffer>,
   targetFormat: Html5FormatSpec,
 ): Promise<string> {
-  const nonBgAssets = assets.filter((a) => !a.discarded && !BACKGROUND_CLASSIFICATIONS.has(a.classification ?? ""));
+  const usableAssets = assets.filter((a) => !a.discarded);
 
-  const assetImageBlocks: AdaptContentBlock[] = nonBgAssets.flatMap((asset) => {
+  const assetImageBlocks: AdaptContentBlock[] = usableAssets.flatMap((asset) => {
     const filename = assetFilename(asset);
     if (!filename) return [];
     const buffer = assetBuffers.get(filename);
@@ -219,8 +210,7 @@ export async function adaptHtml5WithVision(
     masterHtml,
     "",
     `Genera el HTML5 para ${targetFormat.width}x${targetFormat.height}px.`,
-    "El background es 'background.jpg' (el outpainted que ya tienes).",
-    "Posiciona los demás assets con criterio profesional.",
+    "Cada asset adjunto ya viene con su nombre de fichero — compón el layout con todos ellos (fondo/imagen_principal incluidos), con criterio profesional.",
     "Mantén la animación del master adaptada al nuevo formato.",
     "Respeta las zonas seguras IAB (10px mínimo), mantén el mismo clickTag que el master, y el #ad con border: 1px solid #000 y exactamente " +
       `${targetFormat.width}x${targetFormat.height}px.`,
@@ -233,11 +223,7 @@ export async function adaptHtml5WithVision(
       `Eres un productor experto en publicidad digital HTML5.\nAquí tienes el banner master original (${masterFormat.width}x${masterFormat.height}px):`,
     ),
     imageContentBlock("image/png", masterRendered),
-    textContentBlock(
-      `Este es el background ya generado y adaptado para el formato ${targetFormat.width}x${targetFormat.height}px. Se usará como 'background.jpg' en el HTML:`,
-    ),
-    imageContentBlock("image/png", outpaintedBackground),
-    textContentBlock("Assets adicionales (textos, logos, CTAs) que debes posicionar:"),
+    textContentBlock("Assets a posicionar (algunos ya vienen reencuadrados al nuevo formato):"),
     ...assetImageBlocks,
     textContentBlock(instructions),
   ];
