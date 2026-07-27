@@ -1,7 +1,5 @@
 import { createSessionSupabaseClient } from "@/lib/supabase/server-session";
-import type { ProjectAsset } from "@/lib/types";
-
-const THUMBNAIL_SIGNED_URL_TTL_SECONDS = 3600;
+import type { ProjectAsset, TextLayerMetadata } from "@/lib/types";
 
 /** Extensiones de archivos originales (Excel, guía de animación en texto) — nunca son capas del PSD. */
 const NON_PSD_EXTENSIONS = [".xlsx", ".xls", ".txt"];
@@ -14,7 +12,13 @@ function isNonPsdFile(filePath: string | null): boolean {
 
 export type ProjectLayer = ProjectAsset & { thumbnailUrl: string | null };
 
-/** Capas del editor de capas: no descartadas, extraídas del PSD (sin Excel/guía de animación), ordenadas por z_index, con signed URL de thumbnail. */
+/**
+ * Capas del editor de capas: no descartadas, extraídas del PSD (sin Excel/guía de
+ * animación), ordenadas por z_index. El thumbnail se sirve vía
+ * `/api/preview/[projectId]/assets/[filename]` (misma ruta que usa el preview del
+ * master) en vez de signed URLs de Storage: evita expiraciones/errores de firma y
+ * reutiliza el fallback jpg→png ya implementado ahí.
+ */
 export async function getProjectLayers(projectId: string): Promise<ProjectLayer[]> {
   const supabase = await createSessionSupabaseClient();
 
@@ -31,18 +35,14 @@ export async function getProjectLayers(projectId: string): Promise<ProjectLayer[
   // solo se muestran assets extraídos del PSD (imagen/texto/grupo con su PNG/JPG).
   const assets = (data as ProjectAsset[]).filter((asset) => !isNonPsdFile(asset.file_path));
 
-  return Promise.all(
-    assets.map(async (asset) => {
-      if (!asset.file_path) return { ...asset, thumbnailUrl: null };
-      const { data: signed, error: signError } = await supabase.storage
-        .from("adstudio-projects")
-        .createSignedUrl(asset.file_path, THUMBNAIL_SIGNED_URL_TTL_SECONDS);
-      // Fix 4: log de diagnóstico — confirma que la signed URL se genera (o el
-      // motivo por el que no) para cada thumbnail del preview del editor de capas.
-      console.log("Signed URL de capa:", { assetId: asset.id, filePath: asset.file_path, url: signed?.signedUrl, error: signError });
-      return { ...asset, thumbnailUrl: signed?.signedUrl ?? null };
-    }),
-  );
+  return assets.map((asset) => {
+    const filename = (asset.metadata as TextLayerMetadata | undefined)?.filename;
+    const thumbnailUrl =
+      typeof filename === "string" && filename.trim()
+        ? `/api/preview/${projectId}/assets/${filename}`
+        : null;
+    return { ...asset, thumbnailUrl };
+  });
 }
 
 export type LayerPatchableField =

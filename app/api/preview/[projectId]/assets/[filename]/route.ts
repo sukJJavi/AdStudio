@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import sharp from "sharp";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
 export const runtime = "nodejs";
@@ -28,21 +29,42 @@ export async function GET(
   const { projectId, filename } = await params;
 
   const supabase = createServerSupabaseClient();
+  const isJpg = filename.endsWith(".jpg");
+  const storagePath = `${projectId}/layers/${filename}`;
 
-  const { data, error } = await supabase.storage
-    .from("adstudio-projects")
-    .download(`${projectId}/layers/${filename}`);
+  const { data } = await supabase.storage.from("adstudio-projects").download(storagePath);
 
-  if (error || !data) {
-    return new NextResponse("Asset no encontrado.", { status: 404 });
+  if (data) {
+    return new NextResponse(await data.arrayBuffer(), {
+      status: 200,
+      headers: {
+        "Content-Type": contentTypeFor(filename),
+        "Content-Disposition": "inline",
+        "Cache-Control": "public, max-age=3600",
+      },
+    });
   }
 
-  return new NextResponse(await data.arrayBuffer(), {
-    status: 200,
-    headers: {
-      "Content-Type": contentTypeFor(filename),
-      "Content-Disposition": "inline",
-      "Cache-Control": "public, max-age=3600",
-    },
-  });
+  // Fix: el ZIP puede referenciar `imagen_principal.jpg` (export_as_jpg) cuando en Storage
+  // solo se subió el PNG original de la capa — convertimos al vuelo en vez de 404.
+  if (isJpg) {
+    const pngPath = storagePath.replace(/\.jpg$/, ".png");
+    const { data: pngData } = await supabase.storage.from("adstudio-projects").download(pngPath);
+
+    if (pngData) {
+      const pngBuffer = Buffer.from(await pngData.arrayBuffer());
+      const jpgBuffer = await sharp(pngBuffer).jpeg({ quality: 85 }).toBuffer();
+
+      return new NextResponse(jpgBuffer, {
+        status: 200,
+        headers: {
+          "Content-Type": "image/jpeg",
+          "Content-Disposition": "inline",
+          "Cache-Control": "public, max-age=3600",
+        },
+      });
+    }
+  }
+
+  return new NextResponse("Asset no encontrado.", { status: 404 });
 }
