@@ -5,7 +5,9 @@ import type { LayerBounds, ProjectAsset, TextLayerMetadata } from "@/lib/types";
 
 export type Html5FormatSpec = { width: number; height: number; iabFormat: string };
 
-const SYSTEM_PROMPT = `Eres un experto en producción de publicidad digital con 20 años de experiencia generando piezas HTML5 para campañas de display IAB.
+const SYSTEM_PROMPT = `REGLA ABSOLUTA: NUNCA escribas '#ad img { width: 100%; height: 100% }' ni ninguna regla CSS global que afecte a todos los elementos img o div dentro de #ad. CADA elemento tiene su propio CSS con posición y dimensiones exactas en píxeles. Una regla global DESTRUYE el posicionamiento.
+
+Eres un experto en producción de publicidad digital con 20 años de experiencia generando piezas HTML5 para campañas de display IAB.
 
 Recibes la estructura de capas de un banner publicitario y generas el HTML5 de producción profesional.
 
@@ -97,6 +99,18 @@ function ensureAdBorder(html: string): string {
 }
 
 /**
+ * Elimina reglas CSS globales que Claude a veces añade a pesar de la instrucción
+ * del prompt (p.ej. `#ad img { width: 100%; height: 100% }`): sobrescriben el
+ * posicionamiento absoluto en px de cada capa individual y rompen el layout.
+ */
+function sanitizeHtml(html: string): string {
+  return html
+    .replace(/#ad\s+img\s*\{[^}]*width\s*:\s*100%[^}]*\}/gi, "")
+    .replace(/#ad\s+img\s*\{[^}]*height\s*:\s*100%[^}]*\}/gi, "")
+    .replace(/\.layer\s*\{[^}]*width\s*:\s*100%[^}]*height\s*:\s*100%[^}]*\}/gi, "");
+}
+
+/**
  * Genera el HTML5 de producción de un banner llamando a Claude UNA SOLA VEZ por
  * proyecto (el master). Las adaptaciones a otros formatos reutilizan este mismo
  * HTML vía `adaptHtml5ToFormat`, sin volver a llamar a Claude — ver
@@ -137,7 +151,7 @@ export async function generateHtml5Master(
   const textBlock = response.content.find((block) => block.type === "text");
   const raw = textBlock && textBlock.type === "text" ? textBlock.text : "";
 
-  const html = ensureAdBorder(stripCodeFence(raw));
+  const html = ensureAdBorder(sanitizeHtml(stripCodeFence(raw)));
 
   return { html, assetFilenames: descriptors.map((d) => d.filename) };
 }
