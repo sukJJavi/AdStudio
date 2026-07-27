@@ -19,15 +19,12 @@ export default async function LayersPage({
     return max;
   }, null) ?? { ancho: 300, alto: 250 };
 
-  const hasCriticalIncidents = formats.some((f) => f.incidencias.some((i) => i.level === "critico"));
-
   return (
     <LayersEditor
       projectId={id}
       initialLayers={layers}
       canvasWidth={largestFormat.ancho}
       canvasHeight={largestFormat.alto}
-      hasCriticalIncidents={hasCriticalIncidents}
     />
   );
 }

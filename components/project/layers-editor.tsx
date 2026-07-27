@@ -7,6 +7,8 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { ProjectLayer } from "@/lib/layers";
 import { LAYER_CLASSIFICATIONS, type LayerClassification } from "@/lib/types";
+import { FormatIncidentCard } from "@/components/incident-report/format-incident-card";
+import type { AnalysisFormatStatus } from "@/lib/iab/incident-analyzer";
 
 const FRAME_OPTIONS = [0, 1, 2, 3, 4];
 
@@ -62,13 +64,11 @@ export function LayersEditor({
   initialLayers,
   canvasWidth,
   canvasHeight,
-  hasCriticalIncidents,
 }: {
   projectId: string;
   initialLayers: ProjectLayer[];
   canvasWidth: number;
   canvasHeight: number;
-  hasCriticalIncidents: boolean;
 }) {
   const router = useRouter();
   const [layers, setLayers] = useState<ProjectLayer[]>(initialLayers);
@@ -79,6 +79,8 @@ export function LayersEditor({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [regenerating, setRegenerating] = useState(false);
+  const [checkingIncidents, setCheckingIncidents] = useState(false);
+  const [blockedReport, setBlockedReport] = useState<AnalysisFormatStatus[] | null>(null);
 
   const sorted = useMemo(() => [...layers].sort((a, b) => a.z_index - b.z_index), [layers]);
 
@@ -203,11 +205,44 @@ export function LayersEditor({
     }
   }
 
+  async function handleContinueToMaster() {
+    setCheckingIncidents(true);
+    setSaveError(null);
+    setBlockedReport(null);
+
+    try {
+      const res = await fetch("/api/analysis/recalculate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        setSaveError(data.error ?? "No se pudo recalcular el análisis.");
+        return;
+      }
+
+      if (data.hasCritical) {
+        setBlockedReport(data.formats as AnalysisFormatStatus[]);
+        return;
+      }
+
+      router.push(`/project/${projectId}/master`);
+    } catch {
+      setSaveError("Error de red al recalcular incidencias.");
+    } finally {
+      setCheckingIncidents(false);
+    }
+  }
+
   const visible = sorted.filter((l) => !l.discarded);
   const unassigned = visible.filter((l) => needsFrameFor(l));
   const usedFrames = Array.from(new Set(visible.flatMap((l) => l.frames ?? []))).sort((a, b) => a - b);
 
-  const canContinue = unassigned.length === 0 && visible.length > 0 && !hasCriticalIncidents;
+  // El gate real de incidencias críticas ocurre en handleContinueToMaster, que recalcula
+  // el análisis con las clasificaciones actuales antes de decidir si se puede navegar.
+  const canContinue = unassigned.length === 0 && visible.length > 0;
 
   const previewLayers = visible.filter((l) =>
     previewFrame === "all" ? true : l.persistent || (l.frames ?? []).includes(previewFrame),
@@ -375,11 +410,8 @@ export function LayersEditor({
           <Button variant="outline" onClick={handleRegenerar} disabled={regenerating}>
             {regenerating ? "Lanzando..." : "Regenerar análisis"}
           </Button>
-          <Button
-            disabled={!canContinue}
-            onClick={() => router.push(`/project/${projectId}/master`)}
-          >
-            Continuar al master
+          <Button disabled={!canContinue || checkingIncidents} onClick={handleContinueToMaster}>
+            {checkingIncidents ? "Comprobando incidencias..." : "Continuar al master"}
           </Button>
         </div>
         {saveError && <p className="text-sm text-destructive">{saveError}</p>}
@@ -387,10 +419,20 @@ export function LayersEditor({
           <p className="text-xs text-muted-foreground">
             {unassigned.length > 0
               ? `${unassigned.length} capa${unassigned.length === 1 ? "" : "s"} sin frame asignado — asigna frame o marca como persistente todas las capas antes de continuar.`
-              : hasCriticalIncidents
-                ? "Hay incidencias críticas pendientes — regenera el análisis tras reclasificar."
-                : ""}
+              : ""}
           </p>
+        )}
+        {blockedReport && (
+          <div className="flex flex-col gap-3 pt-2">
+            <p className="text-xs font-medium text-[#FF8A8A]">
+              Hay incidencias críticas tras recalcular el análisis — no se puede continuar al master.
+            </p>
+            {blockedReport
+              .filter((f) => f.derivedStatus === "blocked")
+              .map((format) => (
+                <FormatIncidentCard key={format.id} format={format} />
+              ))}
+          </div>
         )}
       </div>
 
