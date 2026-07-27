@@ -3,18 +3,26 @@ import Replicate from "replicate";
 
 const replicate = new Replicate({ auth: process.env.REPLICATE_API_KEY! });
 
-async function uploadImageToReplicate(buffer: Buffer, mimeType: string): Promise<string> {
+async function uploadImageToReplicate(
+  buffer: Buffer,
+  mimeType: string,
+  filename: string = "image.png",
+): Promise<string> {
+  const formData = new FormData();
+  const blob = new Blob([new Uint8Array(buffer)], { type: mimeType });
+  formData.append("content", blob, filename);
+
   const response = await fetch("https://api.replicate.com/v1/files", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${process.env.REPLICATE_API_KEY}`,
-      "Content-Type": mimeType,
     },
-    body: new Uint8Array(buffer),
+    body: formData,
   });
 
   if (!response.ok) {
-    throw new Error(`Upload failed: ${response.status}`);
+    const text = await response.text();
+    throw new Error(`Upload failed: ${response.status} - ${text}`);
   }
 
   const data = (await response.json()) as { urls: { get: string } };
