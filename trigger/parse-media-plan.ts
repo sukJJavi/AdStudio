@@ -184,7 +184,9 @@ export const parseMediaPlan = task({
     metadata.set("step", "parseando-filas");
     metadata.set("progress", 0.4);
 
-    type ProducibleEntry = { nombreSoporte: string; iabFormat: string; pesoMaxKb: number | null };
+    // Bloque 10: la deduplicación es por TAMAÑO únicamente (no soporte+tamaño) —
+    // un mismo iab_format agrupa todos los medios del plan que lo necesitan.
+    type ProducibleEntry = { sizeKey: string; iabFormat: string; pesoMaxKb: number | null; soportes: Set<string> };
     const producible = new Map<string, ProducibleEntry>();
     const excluded = new Map<string, MediaPlanExcludedEntry>();
 
@@ -220,18 +222,21 @@ export const parseMediaPlan = task({
       const [, w, h] = sizeMatch;
       const sizeKey = `${w}x${h}`;
       const iabFormat = SIZE_TO_IAB_FORMAT[sizeKey] ?? sizeKey;
-      const nombreSoporte =
+      // Medio que necesita este tamaño (ver adstudio_formats.soportes) — misma
+      // construcción que antes servía de nombre_soporte, ahora es solo una
+      // etiqueta más dentro del array de medios del formato.
+      const medio =
         parsed.plataforma && parsed.soporte
           ? `${parsed.plataforma} - ${parsed.soporte}`
           : parsed.soporte || parsed.plataforma || sizeKey;
       const pesoMaxKb = parsePesoKb(parsed.peso);
 
-      const dedupKey = `${nombreSoporte}__${iabFormat}`;
-      const existing = producible.get(dedupKey);
+      const existing = producible.get(iabFormat);
       if (!existing) {
-        producible.set(dedupKey, { nombreSoporte, iabFormat, pesoMaxKb });
-      } else if (existing.pesoMaxKb == null && pesoMaxKb != null) {
-        existing.pesoMaxKb = pesoMaxKb;
+        producible.set(iabFormat, { sizeKey, iabFormat, pesoMaxKb, soportes: new Set([medio]) });
+      } else {
+        existing.soportes.add(medio);
+        if (existing.pesoMaxKb == null && pesoMaxKb != null) existing.pesoMaxKb = pesoMaxKb;
       }
     }
 
@@ -240,29 +245,35 @@ export const parseMediaPlan = task({
 
     const { data: existingFormats } = await supabase
       .from("adstudio_formats")
-      .select("id, nombre_soporte, iab_format")
+      .select("id, nombre_soporte, iab_format, soportes")
       .eq("project_id", payload.projectId);
 
     for (const entry of producible.values()) {
-      const match = (existingFormats ?? []).find(
-        (f) => f.nombre_soporte === entry.nombreSoporte && f.iab_format === entry.iabFormat,
-      );
+      // Dedupe por tamaño únicamente: matchea por iab_format (1:1 con el tamaño),
+      // no por nombre_soporte (que ahora es siempre el tamaño en sí).
+      const match = (existingFormats ?? []).find((f) => f.iab_format === entry.iabFormat);
 
       // Comprueba que el iab_format catalogado o custom "WxH" tenga dimensiones
       // resolubles antes de guardar — descarta cualquier tamaño mal parseado.
       if (!resolveFormatDimensions(entry.iabFormat)) continue;
 
+      const nuevosSoportes = Array.from(entry.soportes);
+
       if (match) {
         // No se pisan url_destino/versiones/status: son campos que el usuario
         // puede haber editado a mano en el brief tras la primera importación.
+        // soportes sí se fusiona (unión) en vez de sobrescribirse, para no
+        // perder medios que el usuario haya añadido a mano en el brief.
+        const soportesPrevios = Array.isArray(match.soportes) ? (match.soportes as string[]) : [];
+        const soportesFusionados = Array.from(new Set([...soportesPrevios, ...nuevosSoportes]));
         await supabase
           .from("adstudio_formats")
-          .update({ peso_max_kb: entry.pesoMaxKb })
+          .update({ peso_max_kb: entry.pesoMaxKb, soportes: soportesFusionados })
           .eq("id", match.id);
       } else {
         await supabase.from("adstudio_formats").insert({
           project_id: payload.projectId,
-          nombre_soporte: entry.nombreSoporte,
+          nombre_soporte: entry.sizeKey,
           iab_format: entry.iabFormat,
           url_destino: null,
           versiones: 1,
@@ -270,6 +281,7 @@ export const parseMediaPlan = task({
           incidencias: [],
           peso_max_kb: entry.pesoMaxKb,
           is_master: false,
+          soportes: nuevosSoportes,
         });
       }
     }

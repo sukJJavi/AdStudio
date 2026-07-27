@@ -34,6 +34,22 @@ export function campaignSlug(cliente: string, producto: string | null): string {
   return producto ? `${clienteSlug}_${sanitizePathSegment(producto)}` : clienteSlug;
 }
 
+/**
+ * Carpetas del ZIP para una pieza (Bloque 10 — dedupe de adstudio_formats por
+ * tamaño, no por soporte): una por cada medio en `soportes[]`, o `nombre_soporte`
+ * (el tamaño) si no hay ningún medio asignado todavía. La pieza (HTML/PNGs/JPG)
+ * se genera una única vez en trigger/render-adaptations.ts y sus buffers se
+ * copian a cada una de estas carpetas, no se regeneran.
+ */
+export function pieceFoldersFor(format: {
+  nombre_soporte: string;
+  iab_format: string;
+  soportes?: string[] | null;
+}): string[] {
+  const medios = format.soportes && format.soportes.length > 0 ? format.soportes : [format.nombre_soporte];
+  return medios.map((medio) => `${sanitizePathSegment(medio)}/${format.iab_format}`);
+}
+
 export type ManifestPieceEntry = {
   nombreSoporte: string;
   iabFormat: string;
@@ -42,6 +58,8 @@ export type ManifestPieceEntry = {
   jpgSizeBytes: number;
   htmlSizeBytes: number;
   incidencias: Incidencia[];
+  /** Medios/carpetas del ZIP que llevan esta pieza (ver pieceFoldersFor). */
+  soportes: string[];
 };
 
 /** manifest.json en la raíz del ZIP: dimensiones, peso, versión, fecha, incidencias por pieza. */

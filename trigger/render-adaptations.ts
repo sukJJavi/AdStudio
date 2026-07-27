@@ -13,7 +13,7 @@ import {
   buildManifestJson,
   buildZipBuffer,
   campaignSlug,
-  sanitizePathSegment,
+  pieceFoldersFor,
   type ManifestPieceEntry,
   type ZipFileEntry,
 } from "@/lib/export/zip";
@@ -184,12 +184,18 @@ export const renderAdaptations = task({
 
         await supabase.from("adstudio_formats").update({ status: "ready" }).eq("id", format.id);
 
-        const pieceFolder = `${sanitizePathSegment(format.nombre_soporte)}_${format.iab_format}`;
-        zipEntries.push({ path: `${pieceFolder}/index.html`, content: adaptedHtml });
-        for (const png of [...staticPngEntries, ...croppedPngEntries]) {
-          zipEntries.push({ path: `${pieceFolder}/${png.filename}`, content: png.buffer });
+        // La pieza se genera UNA SOLA VEZ arriba (HTML, PNGs recortados, JPG de
+        // respaldo); aquí solo se copian esos mismos buffers a la carpeta de
+        // cada medio que necesita este tamaño (adstudio_formats.soportes —
+        // Bloque 10, dedupe por tamaño en vez de por soporte+tamaño).
+        const pieceFolders = pieceFoldersFor(format);
+        for (const pieceFolder of pieceFolders) {
+          zipEntries.push({ path: `${pieceFolder}/index.html`, content: adaptedHtml });
+          for (const png of [...staticPngEntries, ...croppedPngEntries]) {
+            zipEntries.push({ path: `${pieceFolder}/${png.filename}`, content: png.buffer });
+          }
+          zipEntries.push({ path: `${pieceFolder}/fallback.jpg`, content: fallbackJpg });
         }
-        zipEntries.push({ path: `${pieceFolder}/fallback.jpg`, content: fallbackJpg });
 
         manifestPieces.push({
           nombreSoporte: format.nombre_soporte,
@@ -199,6 +205,7 @@ export const renderAdaptations = task({
           jpgSizeBytes: fallbackJpg.byteLength,
           htmlSizeBytes: Buffer.byteLength(adaptedHtml, "utf8"),
           incidencias: format.incidencias ?? [],
+          soportes: format.soportes ?? [],
         });
 
         producedCount += 1;

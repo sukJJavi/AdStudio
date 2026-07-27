@@ -78,6 +78,10 @@ create table if not exists adstudio_formats (
   -- brief — solo uno puede ser true por proyecto (app/api/brief/route.ts).
   -- trigger/render-master.ts lo usa en vez de asumir "el de mayor área".
   is_master boolean not null default false,
+  -- Bloque 10: medios/plataformas del plan que necesitan este tamaño — la
+  -- deduplicación en trigger/parse-media-plan.ts pasa a ser por tamaño
+  -- únicamente, así que un mismo formato puede cubrir varios medios.
+  soportes jsonb not null default '[]',
   created_at timestamptz not null default now()
 );
 
@@ -89,6 +93,9 @@ alter table adstudio_formats add column if not exists peso_max_kb integer defaul
 alter table adstudio_formats add column if not exists is_master boolean default false;
 update adstudio_formats set is_master = false where is_master is null;
 alter table adstudio_formats alter column is_master set not null;
+alter table adstudio_formats add column if not exists soportes jsonb default '[]';
+update adstudio_formats set soportes = '[]' where soportes is null;
+alter table adstudio_formats alter column soportes set not null;
 
 create table if not exists adstudio_assets (
   id uuid primary key default gen_random_uuid(),

@@ -185,3 +185,15 @@ ALTER TABLE adstudio_formats
   ADD COLUMN IF NOT EXISTS is_master boolean DEFAULT false;
 UPDATE adstudio_formats SET is_master = false WHERE is_master IS NULL;
 ALTER TABLE adstudio_formats ALTER COLUMN is_master SET NOT NULL;
+
+-- =========================================================
+-- Bloque 10 — dedupe por tamaño y ZIP agrupado por soporte
+-- =========================================================
+
+-- Medios/plataformas del plan que necesitan este tamaño (ver
+-- trigger/parse-media-plan.ts): la deduplicación pasa a ser por tamaño
+-- únicamente, así que un mismo adstudio_formats puede cubrir varios medios.
+ALTER TABLE adstudio_formats
+  ADD COLUMN IF NOT EXISTS soportes jsonb DEFAULT '[]';
+UPDATE adstudio_formats SET soportes = '[]' WHERE soportes IS NULL;
+ALTER TABLE adstudio_formats ALTER COLUMN soportes SET NOT NULL;

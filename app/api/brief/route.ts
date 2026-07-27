@@ -12,6 +12,7 @@ type BriefFormatInput = {
   versiones: number;
   peso_max_kb?: number | null;
   is_master?: boolean;
+  soportes?: string[];
 };
 
 type BriefPayload = {
@@ -124,6 +125,7 @@ export async function POST(req: NextRequest) {
         versiones: f.versiones,
         peso_max_kb: f.peso_max_kb ?? null,
         is_master: !!f.is_master,
+        soportes: Array.isArray(f.soportes) ? f.soportes : [],
         status: "pending",
       })),
     );
@@ -188,6 +190,7 @@ export async function PUT(req: NextRequest) {
         versiones: f.versiones,
         peso_max_kb: f.peso_max_kb ?? null,
         is_master: !!f.is_master,
+        soportes: Array.isArray(f.soportes) ? f.soportes : [],
         status: "pending",
       })),
     );

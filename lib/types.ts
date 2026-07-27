@@ -76,6 +76,8 @@ export type ProjectFormat = {
   peso_max_kb: number | null;
   /** Formato elegido como master del proyecto (ver app/project/[id]/brief) — solo uno puede ser true por proyecto. */
   is_master: boolean;
+  /** Medios/plataformas del plan que necesitan este tamaño (dedupe por tamaño en trigger/parse-media-plan.ts). */
+  soportes: string[];
   created_at: string;
 };
 

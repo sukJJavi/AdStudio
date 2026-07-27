@@ -38,7 +38,15 @@ type SoporteRow = {
   versiones: number;
   peso_max_kb: string;
   is_master: boolean;
+  /** Medios/plataformas del plan que necesitan este tamaño (ver trigger/parse-media-plan.ts). */
+  soportes: string[];
 };
+
+/** nombre_soporte pasa a ser siempre el tamaño (ver trigger/parse-media-plan.ts) — se deriva del iab_format, no se edita a mano. */
+function nombreSoporteFor(iabFormat: string): string {
+  const dims = resolveFormatDimensions(iabFormat);
+  return dims ? `${dims.ancho}x${dims.alto}` : iabFormat;
+}
 
 function formatToRow(f: ProjectFormat): SoporteRow {
   return {
@@ -50,6 +58,7 @@ function formatToRow(f: ProjectFormat): SoporteRow {
     versiones: f.versiones,
     peso_max_kb: f.peso_max_kb != null ? String(f.peso_max_kb) : "",
     is_master: f.is_master,
+    soportes: Array.isArray(f.soportes) ? f.soportes : [],
   };
 }
 
@@ -84,12 +93,13 @@ const NIVEL_ICON: Record<Incidencia["nivel"], string> = {
 function newRow(): SoporteRow {
   return {
     key: crypto.randomUUID(),
-    nombre_soporte: "",
+    nombre_soporte: nombreSoporteFor(IAB_SPECS[0].id),
     iab_format: IAB_SPECS[0].id,
     url_destino: "",
     versiones: 1,
     peso_max_kb: "",
     is_master: false,
+    soportes: [],
   };
 }
 
@@ -215,6 +225,18 @@ export function BriefForm({
     setRows((prev) => prev.map((r) => ({ ...r, is_master: r.key === key })));
   }
 
+  function addSoporte(key: string, medio: string) {
+    setRows((prev) =>
+      prev.map((r) => (r.key === key && !r.soportes.includes(medio) ? { ...r, soportes: [...r.soportes, medio] } : r)),
+    );
+  }
+
+  function removeSoporte(key: string, index: number) {
+    setRows((prev) =>
+      prev.map((r) => (r.key === key ? { ...r, soportes: r.soportes.filter((_, i) => i !== index) } : r)),
+    );
+  }
+
   function handleAnalizar() {
     const resultado = rows.map((row) => ({
       key: row.key,
@@ -246,6 +268,7 @@ export function BriefForm({
         versiones: Number(r.versiones) || 1,
         peso_max_kb: r.peso_max_kb.trim() ? Number(r.peso_max_kb) : null,
         is_master: r.is_master,
+        soportes: r.soportes,
       })),
     };
 
@@ -516,17 +539,40 @@ export function BriefForm({
                         />
                       </TableCell>
                       <TableCell>
-                        <Input
-                          value={row.nombre_soporte}
-                          onChange={(e) => updateRow(row.key, { nombre_soporte: e.target.value })}
-                          placeholder="Ej. Home – Marca Blanca"
-                        />
+                        <div className="flex flex-wrap items-center gap-1">
+                          {row.soportes.map((medio, i) => (
+                            <Badge key={i} variant="secondary" className="gap-1 font-normal">
+                              {medio}
+                              <button
+                                type="button"
+                                aria-label={`Quitar ${medio}`}
+                                onClick={() => removeSoporte(row.key, i)}
+                                className="hover:text-destructive"
+                              >
+                                ×
+                              </button>
+                            </Badge>
+                          ))}
+                          <input
+                            type="text"
+                            placeholder="+ medio"
+                            className="w-20 rounded-md border border-input bg-transparent px-1.5 py-0.5 text-xs"
+                            onKeyDown={(e) => {
+                              const value = e.currentTarget.value.trim();
+                              if (e.key === "Enter" && value) {
+                                addSoporte(row.key, value);
+                                e.currentTarget.value = "";
+                              }
+                            }}
+                          />
+                        </div>
                       </TableCell>
                       <TableCell>
                         <Select
                           value={row.iab_format}
                           onValueChange={(value) =>
-                            value && updateRow(row.key, { iab_format: value })
+                            value &&
+                            updateRow(row.key, { iab_format: value, nombre_soporte: nombreSoporteFor(value) })
                           }
                         >
                           <SelectTrigger>

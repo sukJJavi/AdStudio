@@ -244,3 +244,20 @@ Single-context layout: `CONTEXT.md` + `docs/adr/` at the repo root, created lazi
   `adstudio_projects.master_html = null` en `lib/master.ts:triggerMasterGeneration` antes de lanzar el
   job, para cualquier status de partida (no solo `master_ready`/`approved`) — evita servir el HTML5
   viejo si el job de regeneración falla a mitad
+
+## Dedupe por tamaño y ZIP agrupado por soporte (Bloque 10)
+- `trigger/parse-media-plan.ts` deduplica por TAMAÑO únicamente (antes: soporte+tamaño): un mismo
+  `adstudio_formats` cubre todos los medios del plan que necesiten ese tamaño, acumulados en el nuevo
+  campo `soportes` (jsonb, array de strings — ver `adstudio_formats.soportes`). `nombre_soporte` pasa a
+  ser siempre el tamaño (`"300x250"`), nunca el nombre del medio
+  - Reimportar el Excel fusiona `soportes` (unión), nunca lo sobreescribe — no borra medios que el
+    usuario haya añadido a mano en el brief
+- En el brief (`components/project/brief-form.tsx`), la columna "Soporte" muestra los medios como
+  badges (`row.soportes`), editables (añadir con Enter, quitar con ×). `nombre_soporte` ya no es un
+  campo editable: se deriva automáticamente del `iab_format` (`nombreSoporteFor`)
+- ZIP de adaptaciones (`trigger/render-adaptations.ts` + `lib/export/zip.ts:pieceFoldersFor`): cada
+  pieza (HTML5 + PNGs recortados + fallback.jpg) se genera UNA SOLA VEZ por formato, y sus buffers se
+  copian (mismas referencias, no se regeneran) a una carpeta `{medio}/{iab_format}/` por cada entrada de
+  `soportes[]`. Si un formato no tiene ningún medio asignado, cae a una única carpeta
+  `{nombre_soporte}/{iab_format}/` (el tamaño). El ZIP del master no cambia (sigue sin subcarpeta por
+  pieza, ver Bloque 8 en Convenciones)
