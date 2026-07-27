@@ -1,4 +1,7 @@
 import sharp from "sharp";
+import Replicate from "replicate";
+
+const replicate = new Replicate({ auth: process.env.REPLICATE_API_KEY! });
 
 /**
  * Genera una imagen adaptada a un nuevo formato IAB a partir del render del
@@ -15,8 +18,12 @@ export async function outpaintToFormat(
   targetWidth: number,
   targetHeight: number,
 ): Promise<Buffer> {
-  const Replicate = (await import("replicate")).default;
-  const replicate = new Replicate({ auth: process.env.REPLICATE_API_KEY });
+  console.log(
+    "Replicate auth presente:",
+    !!process.env.REPLICATE_API_KEY,
+    "longitud:",
+    process.env.REPLICATE_API_KEY?.length,
+  );
 
   const masterBase64 = `data:image/png;base64,${masterImageBuffer.toString("base64")}`;
   const aspectRatio = `${targetWidth}:${targetHeight}`;
