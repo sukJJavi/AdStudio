@@ -46,6 +46,20 @@ adaptaciones por formato, animación y exportación.
   /analyze-psd.ts     → job: ag-psd + Claude Vision por capas (+ fontName/fontSize/content de capas de texto;
                           aplana el árbol de carpetas detectando frame/persistent desde el nombre de carpeta,
                           más blend_mode/opacity/layer_bounds/z_index por capa — ver editor de capas)
+  /parse-media-plan.ts → job: parser inteligente del Excel de plan de medios (agencia, no tabla simple).
+                          Se dispara solo con que haya Excel subido (no depende del PSD, a diferencia de
+                          analyze-psd — ver `lib/media-plan.ts` y `app/api/upload/route.ts`). Busca en todas
+                          las hojas la fila header (matchea ≥2 de "Formato"/"Tamaño"/"Soporte"/"Plataforma"),
+                          resuelve columnas por nombre (Soporte/Soporte Detalle, Plataforma/Proveedor,
+                          Tamaño/Duración|Tamaño|Formato, Tipo de Formato, Peso), filtra filas Estándar/Banner/
+                          Display con patrón WxH y sin palabras de vídeo/audio/social, dedupe por
+                          soporte+tamaño único (`nombre_soporte = "{plataforma} - {soporte}"`), mapea tamaño →
+                          iab_format del catálogo o `"{W}x{H}"` custom si no está catalogado (ver
+                          `lib/iab/specs.ts:resolveFormatDimensions`), y hace upsert manual en
+                          adstudio_formats (no pisa url_destino/versiones/status si el usuario ya los editó
+                          en el brief). Las filas descartadas (vídeo/audio/social/etc.) no se ignoran: se
+                          guardan en `adstudio_projects.media_plan_excluded` y se muestran en el brief como
+                          "no producibles por AdStudio" con el motivo.
   /validate-excel.ts  → job: parseo + validación copys
   /render-master.ts   → job: JPG/PNG de respaldo (Satori+Resvg, aplica font_primary) + HTML5 del master vía
                           Claude (1 sola llamada, ver html5-generator.ts) + ZIP (index.html + PNGs de capas +
@@ -82,8 +96,10 @@ adaptaciones por formato, animación y exportación.
 ## Modelo de datos (tablas principales)
 - users, workspaces
 - projects (brief, status, tier snapshot, font_primary/font_secondary, master_html — HTML5 del master
-  cacheado, ver `lib/render/html5-cache.ts`)
-- formats (por proyecto: dimensiones, copy, status, incidencias)
+  cacheado, ver `lib/render/html5-cache.ts`; media_plan_excluded — filas del Excel de medios descartadas
+  por `trigger/parse-media-plan.ts`, ver Bloque 8)
+- formats (por proyecto: dimensiones, copy, status, incidencias, peso_max_kb — detectado del plan de medios
+  o editado a mano en el brief, ver Bloque 8)
 - assets (capas extraídas del PSD, clasificadas; metadata jsonb con fontName/fontSize/content en capas de
   texto y filename en toda capa aplanada a PNG — nombre de fichero en Storage y en el HTML5, ver
   trigger/analyze-psd.ts).
@@ -164,3 +180,39 @@ Single-context layout: `CONTEXT.md` + `docs/adr/` at the repo root, created lazi
 - El HTML5 (master y adaptaciones) ya NO usa este layout ni GSAP: lo genera Claude directamente
   (ver `lib/render/html5-generator.ts`), infiriendo la animación del orden de frames y clasificación
   de capas, o de la guía de animación si el usuario subió una (`lib/render/animation-guide.ts`)
+
+## Plan de medios — parser del Excel (Bloque 8)
+- El Excel real de un plan de medios de agencia no es una tabla simple (bloques por soporte, notas,
+  cabeceras variables): `trigger/parse-media-plan.ts` busca la tabla principal en vez de asumir una
+  posición fija, y se dispara automáticamente al subir el Excel (independiente de si ya hay PSD)
+- Solo se producen formatos con tipo de formato Estándar/Banner/Display, tamaño con patrón `WxH`
+  detectado, y sin palabras de vídeo/audio/social (`:15`/`:20`/`:30`, mp4, mp3, Stories, Reels...).
+  El resto NO se ignora: se guarda en `adstudio_projects.media_plan_excluded` y se muestra en el
+  brief como "no producible por AdStudio" con el motivo (vídeo/audio/social/otro)
+- Deduplicación: varias filas del mismo soporte+tamaño para distintos targets/fechas colapsan en un
+  único `adstudio_formats`, nombrado `"{plataforma} - {soporte}"`
+- Tamaños del catálogo IAB mapean a su `iab_format` (300x250→medium-rectangle, 728x90→leaderboard,
+  300x600→half-page, 320x480→mobile-interstitial, 160x600→wide-skyscraper, 970x250→billboard,
+  320x50→mobile-banner); cualquier otro tamaño válido se guarda como `iab_format: "{W}x{H}"` (custom,
+  fuera del catálogo — ver `lib/iab/specs.ts:resolveFormatDimensions`, usado en vez de
+  `getIABFormatById` donde hay que soportar estos formatos custom, p. ej. `components/project/brief-form.tsx`)
+- El upsert en `adstudio_formats` no pisa `url_destino`/`versiones`/`status` de formatos que el
+  usuario ya haya editado a mano en el brief tras una importación anterior — solo actualiza
+  `peso_max_kb`. El usuario puede corregir cualquier campo del formato detectado antes de analizar el PSD
+
+## Smart Crop (adaptaciones)
+- `lib/render/smart-crop.ts`: reencuadra con Claude Vision las capas que no
+  pueden escalarse directo a un formato de proporción muy distinta a la del
+  master. Con diferencia de proporción < 20% hace un resize/cover directo con
+  Sharp, sin llamar a Claude
+- Solo aplica a capas `classification === 'imagen_principal'` o `'fondo'`
+  (`SMART_CROP_CLASSIFICATIONS` en `trigger/render-adaptations.ts`) — el resto
+  (textos, logos, CTAs, decorativos) se posiciona vía CSS en el HTML5 y reutiliza
+  el PNG del master tal cual en todos los formatos, sin recorte
+- Cache en memoria por ejecución del job, clave `{srcW}x{srcH}_to_{targetW}x{targetH}`:
+  varios formatos con la misma proporción origen→destino no repiten la llamada
+  a Claude Vision. Asume que imagen_principal y fondo no comparten exactamente
+  las mismas dimensiones de origen dentro del mismo proyecto (si coincidieran,
+  compartirían crop — limitación aceptada, ver comentario en el propio fichero)
+- Fallback si Claude no devuelve un JSON de recorte válido (o falla la llamada):
+  center crop calculado localmente según la proporción destino

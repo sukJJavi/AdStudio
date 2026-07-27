@@ -152,3 +152,18 @@ alter table adstudio_assets add column if not exists hidden_in_psd boolean defau
 -- usuario por capa en el editor (solo visible para fondo/imagen_principal) y se
 -- aplica al construir el ZIP (trigger/render-master.ts, trigger/render-adaptations.ts).
 alter table adstudio_assets add column if not exists export_as_jpg boolean default false;
+
+-- =========================================================
+-- Bloque 8 — parser inteligente del plan de medios (Excel)
+-- =========================================================
+
+-- Peso máximo (KB) detectado en el plan de medios (columna "Peso" del Excel)
+-- o ajustado a mano en el brief. Ver trigger/parse-media-plan.ts.
+alter table adstudio_formats add column if not exists peso_max_kb integer default null;
+
+-- Filas del plan de medios descartadas por el parser (video/audio/social/etc.)
+-- que se muestran en el brief como "no producibles por AdStudio" con motivo,
+-- en vez de desaparecer silenciosamente. Ver trigger/parse-media-plan.ts.
+alter table adstudio_projects add column if not exists media_plan_excluded jsonb default '[]';
+update adstudio_projects set media_plan_excluded = '[]' where media_plan_excluded is null;
+alter table adstudio_projects alter column media_plan_excluded set not null;

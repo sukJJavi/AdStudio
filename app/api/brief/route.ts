@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { getAuthenticatedUserId } from "@/lib/supabase/auth";
-import { getIABFormatById } from "@/lib/iab/specs";
+import { resolveFormatDimensions } from "@/lib/iab/specs";
 import { requireProjectOwnership } from "@/lib/authorization";
 
 type BriefFormatInput = {
@@ -10,6 +10,7 @@ type BriefFormatInput = {
   iab_format: string;
   url_destino?: string | null;
   versiones: number;
+  peso_max_kb?: number | null;
 };
 
 type BriefPayload = {
@@ -31,7 +32,7 @@ function validatePayload(payload: BriefPayload): string | null {
 
   for (const format of payload.formats) {
     if (!format.nombre_soporte?.trim()) return "Cada soporte necesita un nombre.";
-    if (!getIABFormatById(format.iab_format)) {
+    if (!resolveFormatDimensions(format.iab_format)) {
       return `Formato IAB desconocido: ${format.iab_format}`;
     }
     if (!format.versiones || format.versiones < 1) {
@@ -116,6 +117,7 @@ export async function POST(req: NextRequest) {
         iab_format: f.iab_format,
         url_destino: f.url_destino ?? null,
         versiones: f.versiones,
+        peso_max_kb: f.peso_max_kb ?? null,
         status: "pending",
       })),
     );
@@ -178,6 +180,7 @@ export async function PUT(req: NextRequest) {
         iab_format: f.iab_format,
         url_destino: f.url_destino ?? null,
         versiones: f.versiones,
+        peso_max_kb: f.peso_max_kb ?? null,
         status: "pending",
       })),
     );

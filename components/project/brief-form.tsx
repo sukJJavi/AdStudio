@@ -21,7 +21,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { IAB_SPECS, getIABFormatById } from "@/lib/iab/specs";
+import { Badge } from "@/components/ui/badge";
+import { IAB_SPECS, getIABFormatById, resolveFormatDimensions } from "@/lib/iab/specs";
 import type { Project, ProjectFormat } from "@/lib/types";
 
 type SoporteRow = {
@@ -31,6 +32,7 @@ type SoporteRow = {
   iab_format: string;
   url_destino: string;
   versiones: number;
+  peso_max_kb: string;
 };
 
 type Incidencia = {
@@ -56,6 +58,7 @@ function newRow(): SoporteRow {
     iab_format: IAB_SPECS[0].id,
     url_destino: "",
     versiones: 1,
+    peso_max_kb: "",
   };
 }
 
@@ -67,7 +70,8 @@ function analizarSoporte(row: SoporteRow): Incidencia[] {
   }
 
   const spec = getIABFormatById(row.iab_format);
-  if (!spec) {
+  const dimensiones = resolveFormatDimensions(row.iab_format);
+  if (!dimensiones) {
     incidencias.push({ nivel: "critico", mensaje: "Formato IAB no reconocido." });
     return incidencias;
   }
@@ -87,7 +91,9 @@ function analizarSoporte(row: SoporteRow): Incidencia[] {
 
   incidencias.push({
     nivel: "aviso",
-    mensaje: `${spec.ancho}x${spec.alto}px · máx ${spec.pesoMaximoKB}KB · zona segura ${spec.zonaSeguraPx}px.`,
+    mensaje: spec
+      ? `${spec.ancho}x${spec.alto}px · máx ${spec.pesoMaximoKB}KB · zona segura ${spec.zonaSeguraPx}px.`
+      : `${dimensiones.ancho}x${dimensiones.alto}px (formato custom, fuera del catálogo IAB).`,
   });
 
   return incidencias;
@@ -100,6 +106,7 @@ export function BriefForm({
   project: Project;
   formats: ProjectFormat[];
 }) {
+  const excludedFromMediaPlan = project.media_plan_excluded ?? [];
   const [cliente, setCliente] = useState(project.cliente ?? "");
   const [producto, setProducto] = useState(project.producto ?? "");
   const [objetivo, setObjetivo] = useState(project.objetivo ?? "");
@@ -118,6 +125,7 @@ export function BriefForm({
           iab_format: f.iab_format,
           url_destino: f.url_destino ?? "",
           versiones: f.versiones,
+          peso_max_kb: f.peso_max_kb != null ? String(f.peso_max_kb) : "",
         }))
       : [newRow()],
   );
@@ -180,6 +188,7 @@ export function BriefForm({
         iab_format: r.iab_format,
         url_destino: r.url_destino || null,
         versiones: Number(r.versiones) || 1,
+        peso_max_kb: r.peso_max_kb.trim() ? Number(r.peso_max_kb) : null,
       })),
     };
 
@@ -266,8 +275,10 @@ export function BriefForm({
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Nombre soporte</TableHead>
+                <TableHead>Soporte</TableHead>
                 <TableHead>Formato IAB</TableHead>
+                <TableHead>Dimensiones</TableHead>
+                <TableHead className="w-24">Peso máx (KB)</TableHead>
                 <TableHead>URL destino</TableHead>
                 <TableHead className="w-28">Versiones</TableHead>
                 <TableHead className="w-10" />
@@ -276,6 +287,8 @@ export function BriefForm({
             <TableBody>
               {rows.map((row) => {
                 const rowAnalisis = analisis?.find((a) => a.key === row.key);
+                const dimensiones = resolveFormatDimensions(row.iab_format);
+                const isCustomFormat = !getIABFormatById(row.iab_format);
                 return (
                   <Fragment key={row.key}>
                     <TableRow>
@@ -297,6 +310,11 @@ export function BriefForm({
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
+                            {isCustomFormat && dimensiones && (
+                              <SelectItem value={row.iab_format}>
+                                Custom ({dimensiones.ancho}x{dimensiones.alto})
+                              </SelectItem>
+                            )}
                             {IAB_SPECS.map((spec) => (
                               <SelectItem key={spec.id} value={spec.id}>
                                 {spec.nombre} ({spec.ancho}x{spec.alto})
@@ -304,6 +322,18 @@ export function BriefForm({
                             ))}
                           </SelectContent>
                         </Select>
+                      </TableCell>
+                      <TableCell className="text-sm text-muted-foreground">
+                        {dimensiones ? `${dimensiones.ancho}x${dimensiones.alto}px` : "—"}
+                      </TableCell>
+                      <TableCell>
+                        <Input
+                          type="number"
+                          min={0}
+                          value={row.peso_max_kb}
+                          onChange={(e) => updateRow(row.key, { peso_max_kb: e.target.value })}
+                          placeholder="Ej. 150"
+                        />
                       </TableCell>
                       <TableCell>
                         <Input
@@ -335,7 +365,7 @@ export function BriefForm({
                     </TableRow>
                     {rowAnalisis && rowAnalisis.incidencias.length > 0 && (
                       <TableRow className="bg-muted/40">
-                        <TableCell colSpan={5}>
+                        <TableCell colSpan={7}>
                           <ul className="flex flex-col gap-1 text-sm">
                             {rowAnalisis.incidencias.map((inc, i) => (
                               <li key={i}>
@@ -354,7 +384,7 @@ export function BriefForm({
 
           <div className="flex items-center justify-between">
             <Button type="button" variant="outline" size="sm" onClick={addRow}>
-              + Añadir soporte
+              + Añadir formato manualmente
             </Button>
             <Button type="button" onClick={handleAnalizar}>
               Analizar formatos
@@ -370,6 +400,30 @@ export function BriefForm({
           )}
         </CardContent>
       </Card>
+
+      {excludedFromMediaPlan.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Formatos no producibles por AdStudio</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2">
+            <p className="text-sm text-muted-foreground">
+              Detectados en el Excel del plan de medios pero fuera del alcance de AdStudio (vídeo, audio,
+              social...). No se generan como soportes, pero se listan aquí para que sepas qué había en el
+              plan.
+            </p>
+            <ul className="flex flex-wrap gap-2">
+              {excludedFromMediaPlan.map((entry, i) => (
+                <li key={i}>
+                  <Badge variant="secondary" className="font-normal">
+                    {entry.soporte} — {entry.motivo}
+                  </Badge>
+                </li>
+              ))}
+            </ul>
+          </CardContent>
+        </Card>
+      )}
 
       <div className="flex items-center gap-3">
         <Button onClick={handleGuardar} disabled={saving}>

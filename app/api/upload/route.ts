@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 import { triggerAnalysis } from "@/lib/analysis";
+import { triggerMediaPlanParse } from "@/lib/media-plan";
 import { requireProjectOwnership } from "@/lib/authorization";
 
 export const runtime = "nodejs";
@@ -63,6 +64,16 @@ async function registerAssetAndMaybeTriggerAnalysis(
 
   if (insertError || !asset) {
     return { ok: false, error: insertError?.message ?? "No se pudo registrar el archivo." };
+  }
+
+  // El parsing del Excel de medios es independiente del análisis PSD+Excel de
+  // más abajo: no requiere que también haya un PSD subido, así que se dispara
+  // en cuanto se registra el Excel. Best-effort — un fallo aquí no debe tirar
+  // abajo la respuesta del upload, que ya se completó con éxito.
+  if (type === "excel") {
+    triggerMediaPlanParse(projectId).catch((error) => {
+      console.error("triggerMediaPlanParse lanzó una excepción:", error);
+    });
   }
 
   const { data: assets, error: assetsError } = await supabase

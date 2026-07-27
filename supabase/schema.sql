@@ -35,6 +35,10 @@ create table if not exists adstudio_projects (
   -- (lib/render/html5-generator.ts); las adaptaciones lo reutilizan vía
   -- adaptHtml5ToFormat() sin volver a llamar a Claude.
   master_html text default null,
+  -- Bloque 8: formatos del plan de medios descartados por parse-media-plan.ts
+  -- (video/audio/social/etc., ver trigger/parse-media-plan.ts) — se muestran en
+  -- el brief como "no producibles" con el motivo, en vez de ocultarse sin más.
+  media_plan_excluded jsonb not null default '[]',
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -47,6 +51,9 @@ alter table adstudio_projects add column if not exists font_secondary text defau
 update adstudio_projects set font_primary = 'Inter' where font_primary is null;
 alter table adstudio_projects alter column font_primary set not null;
 alter table adstudio_projects add column if not exists master_html text default null;
+alter table adstudio_projects add column if not exists media_plan_excluded jsonb default '[]';
+update adstudio_projects set media_plan_excluded = '[]' where media_plan_excluded is null;
+alter table adstudio_projects alter column media_plan_excluded set not null;
 
 create table if not exists adstudio_formats (
   id uuid primary key default gen_random_uuid(),
@@ -58,6 +65,9 @@ create table if not exists adstudio_formats (
   status text not null default 'pending',
   incidencias jsonb not null default '[]',
   copy text,
+  -- Bloque 8: peso máximo (KB) detectado en el plan de medios (columna "Peso"
+  -- del Excel) o ajustado a mano en el brief — ver trigger/parse-media-plan.ts.
+  peso_max_kb integer default null,
   created_at timestamptz not null default now()
 );
 
@@ -65,6 +75,7 @@ create table if not exists adstudio_formats (
 -- adstudio_formats sin la columna copy (copy del formato, usado por el
 -- análisis de incidencias para validar longitud contra lib/iab/specs.ts).
 alter table adstudio_formats add column if not exists copy text;
+alter table adstudio_formats add column if not exists peso_max_kb integer default null;
 
 create table if not exists adstudio_assets (
   id uuid primary key default gen_random_uuid(),

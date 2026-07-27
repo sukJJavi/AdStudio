@@ -19,6 +19,7 @@ function fallbackProject(id: string): Project {
     font_primary: "Inter",
     font_secondary: null,
     master_html: null,
+    media_plan_excluded: [],
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };

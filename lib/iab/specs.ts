@@ -172,3 +172,24 @@ export function validateFormatWeight(id: string, pesoKB: number): boolean {
   if (!spec) return false;
   return pesoKB <= spec.pesoMaximoKB;
 }
+
+/**
+ * Formatos detectados en el plan de medios cuyo tamaño no coincide con ningún
+ * spec del catálogo IAB (ver trigger/parse-media-plan.ts) se guardan como
+ * `iab_format: "{ancho}x{alto}"` en vez de descartarse. Estos formatos custom
+ * no tienen entrada en IAB_SPECS, así que no llevan peso máximo/zona segura ni
+ * participan del render/las incidencias como un formato catalogado — solo se
+ * usan para mostrar sus dimensiones en la UI (brief).
+ */
+export function parseCustomFormatId(id: string): { ancho: number; alto: number } | null {
+  const match = id.match(/^(\d+)x(\d+)$/i);
+  if (!match) return null;
+  return { ancho: Number(match[1]), alto: Number(match[2]) };
+}
+
+/** Dimensiones de un iab_format, venga del catálogo o de un tamaño custom "WxH". */
+export function resolveFormatDimensions(id: string): { ancho: number; alto: number } | null {
+  const spec = getIABFormatById(id);
+  if (spec) return { ancho: spec.ancho, alto: spec.alto };
+  return parseCustomFormatId(id);
+}

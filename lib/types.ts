@@ -35,8 +35,16 @@ export type Project = {
   font_secondary: string | null;
   /** HTML5 del master generado por Claude (ver lib/render/html5-generator.ts), cacheado para que las adaptaciones lo reutilicen sin volver a llamar a Claude. */
   master_html: string | null;
+  /** Filas del plan de medios descartadas por parse-media-plan.ts (video/audio/social/etc.), con motivo — se muestran en el brief, nunca se ignoran en silencio. */
+  media_plan_excluded: MediaPlanExcludedEntry[];
   created_at: string;
   updated_at: string;
+};
+
+/** Una fila del Excel de medios que parse-media-plan.ts detectó como no producible por AdStudio. */
+export type MediaPlanExcludedEntry = {
+  soporte: string;
+  motivo: string;
 };
 
 export type FormatStatus = "pending" | "producing" | "ready" | "incident";
@@ -61,6 +69,8 @@ export type ProjectFormat = {
   status: FormatStatus;
   incidencias: Incidencia[];
   copy: string | null;
+  /** Peso máximo (KB) detectado en el plan de medios o ajustado a mano en el brief. */
+  peso_max_kb: number | null;
   created_at: string;
 };
 

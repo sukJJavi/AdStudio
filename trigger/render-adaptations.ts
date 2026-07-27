@@ -7,6 +7,8 @@ import { adaptHtml5ToFormat } from "@/lib/render/html5-generator";
 import { getHtml5Master } from "@/lib/render/html5-cache";
 import { renderFallbackFromFrame } from "@/lib/render/fallback-composite";
 import { exportBufferFor, exportFilenameFor } from "@/lib/render/export-format";
+import { smartCrop } from "@/lib/render/smart-crop";
+import sharp from "sharp";
 import {
   buildManifestJson,
   buildZipBuffer,
@@ -26,6 +28,16 @@ function assetFilename(asset: ProjectAsset): string | null {
   const filename = (asset.metadata as TextLayerMetadata | undefined)?.filename;
   return typeof filename === "string" && filename.trim() ? filename : null;
 }
+
+/**
+ * Únicas clasificaciones que se recortan por formato (smart crop): son las que
+ * pueden ocupar gran parte del canvas y sufren al escalarse directo a una
+ * proporción muy distinta (mismo criterio que JPG_TOGGLE_CLASSIFICATIONS en
+ * components/project/layers-editor.tsx). El resto (textos, logos, CTAs,
+ * decorativos) se posiciona vía CSS en el HTML5 y no necesita reencuadre: se
+ * reutiliza el PNG del master tal cual.
+ */
+const SMART_CROP_CLASSIFICATIONS = new Set(["imagen_principal", "fondo"]);
 
 export const renderAdaptations = task({
   id: "render-adaptations",
@@ -63,26 +75,49 @@ export const renderAdaptations = task({
     metadata.set("step", "descargando-pngs-del-master");
     metadata.set("progress", 0.05);
 
-    // Los PNGs del master (por ahora, sin escalado por formato — ver adaptHtml5ToFormat)
-    // se descargan una única vez y se reutilizan en el ZIP de cada formato. Fix 3:
-    // el PNG original en Storage nunca cambia — la conversión a JPG (export_as_jpg)
-    // se aplica aquí, al construir el ZIP, igual que en trigger/render-master.ts.
-    const masterPngEntries = (
+    const downloadableAssets = allAssets
+      .filter((a) => !a.discarded)
+      .flatMap((a) => {
+        const pngFilename = assetFilename(a);
+        return pngFilename && a.file_path ? [{ asset: a, pngFilename }] : [];
+      });
+
+    // Las capas imagen_principal/fondo se reencuadran por formato (smart crop,
+    // ver más abajo): su PNG no puede compartirse entre formatos como el resto.
+    const staticAssets = downloadableAssets.filter(({ asset }) => !SMART_CROP_CLASSIFICATIONS.has(asset.classification ?? ""));
+    const cropTargetAssets = downloadableAssets.filter(({ asset }) => SMART_CROP_CLASSIFICATIONS.has(asset.classification ?? ""));
+
+    // El resto de capas (textos, logos, CTAs, decorativos) se descarga una única
+    // vez y se reutiliza en el ZIP de cada formato tal cual. Fix 3: el PNG
+    // original en Storage nunca cambia — la conversión a JPG (export_as_jpg) se
+    // aplica aquí, al construir el ZIP, igual que en trigger/render-master.ts.
+    const staticPngEntries = (
       await Promise.all(
-        allAssets
-          .filter((a) => !a.discarded)
-          .flatMap((a) => {
-            const pngFilename = assetFilename(a);
-            return pngFilename && a.file_path ? [{ asset: a, pngFilename }] : [];
-          })
-          .map(async ({ asset, pngFilename }) => {
-            const buffer = await downloadAsset(supabase, asset.file_path);
-            if (!buffer) return null;
-            const exported = await exportBufferFor(buffer, !!asset.export_as_jpg);
-            return { filename: exportFilenameFor(pngFilename, !!asset.export_as_jpg), buffer: exported };
-          }),
+        staticAssets.map(async ({ asset, pngFilename }) => {
+          const buffer = await downloadAsset(supabase, asset.file_path);
+          if (!buffer) return null;
+          const exported = await exportBufferFor(buffer, !!asset.export_as_jpg);
+          return { filename: exportFilenameFor(pngFilename, !!asset.export_as_jpg), buffer: exported };
+        }),
       )
     ).filter((entry): entry is { filename: string; buffer: Buffer } => entry != null);
+
+    // Buffer + dimensiones reales de cada capa a reencuadrar, descargados una
+    // sola vez y reencuadrados con smartCrop() dentro del loop por formato.
+    const cropTargets = (
+      await Promise.all(
+        cropTargetAssets.map(async ({ asset, pngFilename }) => {
+          const buffer = await downloadAsset(supabase, asset.file_path);
+          if (!buffer) return null;
+          const { width, height } = await sharp(buffer).metadata();
+          if (!width || !height) return null;
+          return { asset, pngFilename, buffer, width, height };
+        }),
+      )
+    ).filter(
+      (entry): entry is { asset: ProjectAsset; pngFilename: string; buffer: Buffer; width: number; height: number } =>
+        entry != null,
+    );
 
     const zipEntries: ZipFileEntry[] = [];
     const manifestPieces: ManifestPieceEntry[] = [];
@@ -116,6 +151,26 @@ export const renderAdaptations = task({
           supabase,
         );
 
+        // Smart crop: imagen_principal/fondo se reencuadran para la proporción
+        // de este formato (Claude Vision si difiere mucho de la del master,
+        // resize directo si no — ver lib/render/smart-crop.ts). Si el reencuadre
+        // de una capa falla, se usa el master tal cual para esa capa en vez de
+        // tirar abajo la producción de todo el formato.
+        const croppedPngEntries = await Promise.all(
+          cropTargets.map(async ({ asset, pngFilename, buffer, width, height }) => {
+            let croppedBuffer: Buffer;
+            try {
+              const { buffer: smartCropped } = await smartCrop(buffer, width, height, spec.ancho, spec.alto);
+              croppedBuffer = smartCropped;
+            } catch (cropError) {
+              console.error(`Smart crop falló para ${pngFilename} en ${format.iab_format}, usando el master tal cual:`, cropError);
+              croppedBuffer = await sharp(buffer).resize(spec.ancho, spec.alto, { fit: "cover", position: "center" }).png().toBuffer();
+            }
+            const exported = await exportBufferFor(croppedBuffer, !!asset.export_as_jpg);
+            return { filename: exportFilenameFor(pngFilename, !!asset.export_as_jpg), buffer: exported };
+          }),
+        );
+
         const basePath = `${payload.projectId}/adaptations/${format.iab_format}`;
 
         await Promise.all([
@@ -131,7 +186,7 @@ export const renderAdaptations = task({
 
         const pieceFolder = `${sanitizePathSegment(format.nombre_soporte)}_${format.iab_format}`;
         zipEntries.push({ path: `${pieceFolder}/index.html`, content: adaptedHtml });
-        for (const png of masterPngEntries) {
+        for (const png of [...staticPngEntries, ...croppedPngEntries]) {
           zipEntries.push({ path: `${pieceFolder}/${png.filename}`, content: png.buffer });
         }
         zipEntries.push({ path: `${pieceFolder}/fallback.jpg`, content: fallbackJpg });
