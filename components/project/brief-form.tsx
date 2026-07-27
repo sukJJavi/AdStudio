@@ -1,6 +1,8 @@
 "use client";
 
-import { Fragment, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -22,8 +24,10 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { DropArea } from "@/components/project/drop-area";
+import { uploadAssetToStorage } from "@/lib/client-upload";
 import { IAB_SPECS, getIABFormatById, resolveFormatDimensions } from "@/lib/iab/specs";
-import type { Project, ProjectFormat } from "@/lib/types";
+import type { MediaPlanExcludedEntry, Project, ProjectAsset, ProjectFormat } from "@/lib/types";
 
 type SoporteRow = {
   key: string;
@@ -33,7 +37,33 @@ type SoporteRow = {
   url_destino: string;
   versiones: number;
   peso_max_kb: string;
+  is_master: boolean;
 };
+
+function formatToRow(f: ProjectFormat): SoporteRow {
+  return {
+    key: f.id,
+    id: f.id,
+    nombre_soporte: f.nombre_soporte,
+    iab_format: f.iab_format,
+    url_destino: f.url_destino ?? "",
+    versiones: f.versiones,
+    peso_max_kb: f.peso_max_kb != null ? String(f.peso_max_kb) : "",
+    is_master: f.is_master,
+  };
+}
+
+function formatArea(iabFormat: string): number {
+  const dims = resolveFormatDimensions(iabFormat);
+  return dims ? dims.ancho * dims.alto : 0;
+}
+
+/** Si ninguna fila está marcada como master, marca la de mayor área por defecto (el usuario puede cambiarlo). */
+function withDefaultMaster(rows: SoporteRow[]): SoporteRow[] {
+  if (rows.length === 0 || rows.some((r) => r.is_master)) return rows;
+  const largestKey = [...rows].sort((a, b) => formatArea(b.iab_format) - formatArea(a.iab_format))[0]?.key;
+  return rows.map((r) => ({ ...r, is_master: r.key === largestKey }));
+}
 
 type Incidencia = {
   nivel: "aviso" | "atencion" | "critico";
@@ -59,6 +89,7 @@ function newRow(): SoporteRow {
     url_destino: "",
     versiones: 1,
     peso_max_kb: "",
+    is_master: false,
   };
 }
 
@@ -102,11 +133,28 @@ function analizarSoporte(row: SoporteRow): Incidencia[] {
 export function BriefForm({
   project,
   formats,
+  excelAsset,
 }: {
   project: Project;
   formats: ProjectFormat[];
+  excelAsset: ProjectAsset | null;
 }) {
-  const excludedFromMediaPlan = project.media_plan_excluded ?? [];
+  const router = useRouter();
+  const [excludedFromMediaPlan, setExcludedFromMediaPlan] = useState<MediaPlanExcludedEntry[]>(
+    project.media_plan_excluded ?? [],
+  );
+  const [currentExcelAsset, setCurrentExcelAsset] = useState<ProjectAsset | null>(excelAsset);
+  const [excelUpload, setExcelUpload] = useState<{ name: string; progress: number; status: "uploading" | "registering"; error?: string } | null>(
+    null,
+  );
+  const [parsingFormats, setParsingFormats] = useState(false);
+  const [excelDeleting, setExcelDeleting] = useState(false);
+
+  // router.refresh() tras subir/borrar el Excel vuelve a ejecutar el server
+  // component (brief/page.tsx) y pasa un `excelAsset` nuevo — sincroniza el
+  // estado local con la fuente de verdad del servidor en vez de duplicarlo.
+  useEffect(() => setCurrentExcelAsset(excelAsset), [excelAsset]);
+
   const [cliente, setCliente] = useState(project.cliente ?? "");
   const [producto, setProducto] = useState(project.producto ?? "");
   const [objetivo, setObjetivo] = useState(project.objetivo ?? "");
@@ -117,18 +165,16 @@ export function BriefForm({
   );
 
   const [rows, setRows] = useState<SoporteRow[]>(
-    formats.length > 0
-      ? formats.map((f) => ({
-          key: f.id,
-          id: f.id,
-          nombre_soporte: f.nombre_soporte,
-          iab_format: f.iab_format,
-          url_destino: f.url_destino ?? "",
-          versiones: f.versiones,
-          peso_max_kb: f.peso_max_kb != null ? String(f.peso_max_kb) : "",
-        }))
-      : [newRow()],
+    withDefaultMaster(formats.length > 0 ? formats.map(formatToRow) : [newRow()]),
   );
+
+  const masterRow = rows.find((r) => r.is_master) ?? null;
+  const masterDimensiones = masterRow ? resolveFormatDimensions(masterRow.iab_format) : null;
+  const psdMismatchWarning =
+    project.psd_width && project.psd_height && masterDimensiones &&
+    (project.psd_width !== masterDimensiones.ancho || project.psd_height !== masterDimensiones.alto)
+      ? `⚠ El PSD es de ${project.psd_width}x${project.psd_height}px pero el formato master del plan es ${masterDimensiones.ancho}x${masterDimensiones.alto}px. Verifica que el PSD corresponde al formato correcto.`
+      : null;
 
   const [analisis, setAnalisis] = useState<AnalisisRow[] | null>(null);
   const [saving, setSaving] = useState(false);
@@ -151,12 +197,22 @@ export function BriefForm({
   }
 
   function addRow() {
-    setRows((prev) => [...prev, newRow()]);
+    setRows((prev) => withDefaultMaster([...prev, newRow()]));
   }
 
   function removeRow(key: string) {
-    setRows((prev) => (prev.length > 1 ? prev.filter((r) => r.key !== key) : prev));
+    setRows((prev) => {
+      if (prev.length <= 1) return prev;
+      const next = prev.filter((r) => r.key !== key);
+      // Si se eliminó el formato master, hace falta recalcular el default (withDefaultMaster
+      // no reacciona si ninguna fila quedó marcada tras quitar la que sí lo estaba).
+      return withDefaultMaster(next);
+    });
     setAnalisis(null);
+  }
+
+  function selectMaster(key: string) {
+    setRows((prev) => prev.map((r) => ({ ...r, is_master: r.key === key })));
   }
 
   function handleAnalizar() {
@@ -189,6 +245,7 @@ export function BriefForm({
         url_destino: r.url_destino || null,
         versiones: Number(r.versiones) || 1,
         peso_max_kb: r.peso_max_kb.trim() ? Number(r.peso_max_kb) : null,
+        is_master: r.is_master,
       })),
     };
 
@@ -209,6 +266,82 @@ export function BriefForm({
       setSaveError("Error de red al guardar el brief.");
     } finally {
       setSaving(false);
+    }
+  }
+
+  /**
+   * parse-media-plan.ts (trigger/parse-media-plan.ts) corre en background tras el
+   * upload — no hay endpoint de status para ese job, así que se hace polling
+   * best-effort de /api/brief hasta ver más formatos o agotar los intentos.
+   */
+  async function pollForParsedFormats(baselineCount: number) {
+    const maxAttempts = 12;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      try {
+        const res = await fetch(`/api/brief?projectId=${project.id}`, { cache: "no-store" });
+        if (!res.ok) continue;
+        const data = await res.json();
+        const freshFormats = (data.formats ?? []) as ProjectFormat[];
+        const freshExcluded = (data.project?.media_plan_excluded ?? []) as MediaPlanExcludedEntry[];
+        if (freshFormats.length !== baselineCount || attempt === maxAttempts - 1) {
+          setRows(withDefaultMaster(freshFormats.length > 0 ? freshFormats.map(formatToRow) : rows));
+          setExcludedFromMediaPlan(freshExcluded);
+          return;
+        }
+      } catch {
+        // Reintenta en el siguiente tick.
+      }
+    }
+  }
+
+  async function handleExcelFiles(files: File[]) {
+    const file = files[0];
+    if (!file) return;
+
+    const ext = file.name.toLowerCase();
+    if (!ext.endsWith(".xlsx") && !ext.endsWith(".xls")) {
+      setExcelUpload({ name: file.name, progress: 0, status: "uploading", error: "Solo se aceptan .xlsx o .xls" });
+      return;
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      setExcelUpload({ name: file.name, progress: 0, status: "uploading", error: "Supera el máximo de 10MB" });
+      return;
+    }
+
+    setExcelUpload({ name: file.name, progress: 0, status: "uploading" });
+
+    const baselineCount = rows.filter((r) => r.id).length;
+
+    const result = await uploadAssetToStorage(project.id, "excel", file, (percent) => {
+      setExcelUpload((prev) =>
+        prev ? { ...prev, progress: percent, status: percent >= 100 ? "registering" : "uploading" } : prev,
+      );
+    });
+
+    if (!result.ok) {
+      setExcelUpload({ name: file.name, progress: 0, status: "uploading", error: result.error });
+      return;
+    }
+
+    setExcelUpload(null);
+    setParsingFormats(true);
+    await pollForParsedFormats(baselineCount);
+    setParsingFormats(false);
+    router.refresh();
+  }
+
+  async function handleDeleteExcel() {
+    if (!currentExcelAsset) return;
+    setExcelDeleting(true);
+    try {
+      const res = await fetch(`/api/upload/${currentExcelAsset.id}`, { method: "DELETE" });
+      if (res.ok) {
+        setCurrentExcelAsset(null);
+        router.refresh();
+      }
+    } finally {
+      setExcelDeleting(false);
     }
   }
 
@@ -269,12 +402,78 @@ export function BriefForm({
 
       <Card>
         <CardHeader>
+          <CardTitle>Excel del plan de medios</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <p className="text-xs text-muted-foreground">
+            Al subirlo se detectan automáticamente los formatos del plan en la tabla de abajo — puedes
+            corregirlos antes de guardar.
+          </p>
+          <DropArea
+            label="Arrastra el Excel del plan de medios"
+            hint=".xlsx o .xls · máximo 10MB"
+            onFiles={handleExcelFiles}
+            disabled={!!currentExcelAsset || !!excelUpload}
+          />
+
+          {currentExcelAsset && (
+            <div className="flex items-center gap-3 rounded-md border border-border p-2 text-sm">
+              <span className="flex h-10 w-10 items-center justify-center rounded bg-muted text-xs">XLS</span>
+              <span className="flex-1 truncate">{currentExcelAsset.layer_name}</span>
+              <span className="text-xs text-green-600">subido</span>
+              <button
+                type="button"
+                aria-label="Eliminar Excel"
+                disabled={excelDeleting}
+                onClick={handleDeleteExcel}
+                className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-red-600 disabled:opacity-50"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
+
+          {excelUpload && (
+            <div className="flex flex-col gap-1 rounded-md border border-border p-2 text-sm">
+              <div className="flex items-center gap-3">
+                <span className="flex h-10 w-10 items-center justify-center rounded bg-muted text-xs">XLS</span>
+                <span className="flex-1 truncate">{excelUpload.name}</span>
+                <span className={`text-xs ${excelUpload.error ? "text-red-600" : "text-muted-foreground"}`}>
+                  {excelUpload.error ??
+                    (excelUpload.status === "registering"
+                      ? "Subido, registrando..."
+                      : `Subiendo... ${excelUpload.progress}%`)}
+                </span>
+              </div>
+              {!excelUpload.error && (
+                <div className="h-1 w-full overflow-hidden rounded-full bg-muted">
+                  <div
+                    className="h-full rounded-full bg-primary transition-all duration-200"
+                    style={{ width: `${excelUpload.status === "registering" ? 100 : excelUpload.progress}%` }}
+                  />
+                </div>
+              )}
+            </div>
+          )}
+
+          {parsingFormats && (
+            <p className="flex items-center gap-2 text-sm text-muted-foreground">
+              <span className="h-3 w-3 animate-spin rounded-full border-2 border-muted-foreground border-t-transparent" />
+              Detectando formatos del plan...
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle>Soportes del plan</CardTitle>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-14">Master</TableHead>
                 <TableHead>Soporte</TableHead>
                 <TableHead>Formato IAB</TableHead>
                 <TableHead>Dimensiones</TableHead>
@@ -292,6 +491,15 @@ export function BriefForm({
                 return (
                   <Fragment key={row.key}>
                     <TableRow>
+                      <TableCell className="text-center">
+                        <input
+                          type="radio"
+                          name="master-format"
+                          aria-label={`Marcar "${row.nombre_soporte || row.iab_format}" como formato master`}
+                          checked={row.is_master}
+                          onChange={() => selectMaster(row.key)}
+                        />
+                      </TableCell>
                       <TableCell>
                         <Input
                           value={row.nombre_soporte}
@@ -365,7 +573,7 @@ export function BriefForm({
                     </TableRow>
                     {rowAnalisis && rowAnalisis.incidencias.length > 0 && (
                       <TableRow className="bg-muted/40">
-                        <TableCell colSpan={7}>
+                        <TableCell colSpan={8}>
                           <ul className="flex flex-col gap-1 text-sm">
                             {rowAnalisis.incidencias.map((inc, i) => (
                               <li key={i}>
@@ -398,6 +606,8 @@ export function BriefForm({
                 : "Sin incidencias críticas. Puedes guardar el brief."}
             </p>
           )}
+
+          {psdMismatchWarning && <p className="text-sm text-[#F5C46B]">{psdMismatchWarning}</p>}
         </CardContent>
       </Card>
 

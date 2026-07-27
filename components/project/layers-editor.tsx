@@ -42,6 +42,20 @@ const CLASSIFICATION_COLORS: Record<LayerClassification, string> = {
   desconocido: "bg-[#F04444]/15 text-[#F04444] border border-[#F04444]/40",
 };
 
+/**
+ * Únicas incidencias que bloquean "Continuar al master": el resto (incluyendo
+ * LOW_QUALITY_MAIN_IMAGE, MISSING_COPY, MISSING_MAIN_IMAGE) son como mucho
+ * ATENCIÓN y se resuelven en el master, no aquí. No se confía en el nivel
+ * "critico"/derivedStatus del análisis para esta decisión — se fija
+ * explícitamente por código para no depender de que ese invariante se
+ * mantenga si se añaden incidencias nuevas en el futuro.
+ */
+const BLOCKING_INCIDENT_CODES = new Set(["NO_USABLE_LAYERS", "PSD_PARSE_ERROR"]);
+
+function hasBlockingIncident(format: AnalysisFormatStatus): boolean {
+  return format.incidencias.some((i) => BLOCKING_INCIDENT_CODES.has(i.code));
+}
+
 function needsFrameFor(layer: Pick<ProjectLayer, "frames" | "persistent">): boolean {
   return !layer.persistent && (layer.frames ?? []).length === 0;
 }
@@ -223,8 +237,9 @@ export function LayersEditor({
         return;
       }
 
-      if (data.hasCritical) {
-        setBlockedReport(data.formats as AnalysisFormatStatus[]);
+      const formats = data.formats as AnalysisFormatStatus[];
+      if (formats.some(hasBlockingIncident)) {
+        setBlockedReport(formats);
         return;
       }
 
@@ -428,7 +443,7 @@ export function LayersEditor({
               Hay incidencias críticas tras recalcular el análisis — no se puede continuar al master.
             </p>
             {blockedReport
-              .filter((f) => f.derivedStatus === "blocked")
+              .filter(hasBlockingIncident)
               .map((format) => (
                 <FormatIncidentCard key={format.id} format={format} />
               ))}

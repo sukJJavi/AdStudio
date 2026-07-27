@@ -57,9 +57,13 @@ export const renderMaster = task({
       (x) => x.spec.ancho * x.spec.alto,
     );
 
+    // El formato master es el marcado explícitamente por el usuario en el brief
+    // (adstudio_formats.is_master, ver app/project/[id]/brief) — solo si ninguno
+    // está marcado (planes creados antes de este campo) se cae al de mayor área.
+    const masterFlagged = formatsWithSpec.find((x) => x.format.is_master);
     const selected = payload.iabFormatId
       ? (formatsWithSpec.find((x) => x.format.iab_format === payload.iabFormatId) ?? formatsWithSpec[0])
-      : formatsWithSpec[0];
+      : (masterFlagged ?? formatsWithSpec[0]);
 
     if (!selected) {
       throw new Error("El proyecto no tiene formatos con especificación IAB válida.");

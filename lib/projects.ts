@@ -20,6 +20,8 @@ function fallbackProject(id: string): Project {
     font_secondary: null,
     master_html: null,
     media_plan_excluded: [],
+    psd_width: null,
+    psd_height: null,
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };

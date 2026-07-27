@@ -235,6 +235,14 @@ export const analyzePsd = task({
 
       const dpi = psd.imageResources?.resolutionInfo?.horizontalResolution ?? null;
 
+      // Bloque 9: dimensiones reales del canvas del PSD, para comparar contra el
+      // formato master elegido en el brief (ver app/project/[id]/brief/page.tsx).
+      // Con varios PSDs en el proyecto, se queda con las del último procesado.
+      await supabase
+        .from("adstudio_projects")
+        .update({ psd_width: psd.width, psd_height: psd.height })
+        .eq("id", payload.projectId);
+
       const flattened: FlattenedLayer[] = [];
       flattenLayers(psd.children ?? [], { frame: null, persistent: false }, flattened);
 

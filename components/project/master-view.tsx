@@ -327,7 +327,7 @@ export function MasterView({
                   {secondLargestFormat && !variantAlreadyExists && (
                     <Button
                       variant="outline"
-                      disabled={generatingVariant}
+                      disabled={generatingVariant || regeneratingMaster}
                       onClick={() => handleGenerate(secondLargestFormat.iabFormat, false)}
                     >
                       {generatingVariant
@@ -340,7 +340,7 @@ export function MasterView({
                     {regeneratingMaster ? "Regenerando..." : "Regenerar master"}
                   </Button>
 
-                  <Button onClick={handleSendApproval} disabled={sendingApproval}>
+                  <Button onClick={handleSendApproval} disabled={sendingApproval || regeneratingMaster}>
                     {sendingApproval ? "Enviando..." : "Enviar al cliente para aprobación"}
                   </Button>
                 </div>
@@ -376,7 +376,7 @@ export function MasterView({
                     rows={4}
                     className="border-[#2E3644] bg-[#12161F] focus-visible:border-[#2E80FF]"
                   />
-                  <Button onClick={handleApplyChange} disabled={applyingChange || !changeText.trim()}>
+                  <Button onClick={handleApplyChange} disabled={applyingChange || !changeText.trim() || regeneratingMaster}>
                     {applyingChange ? "Aplicando..." : "Aplicar cambio"}
                   </Button>
                   {changeError && <p className="text-sm text-destructive">{changeError}</p>}

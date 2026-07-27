@@ -167,3 +167,21 @@ alter table adstudio_formats add column if not exists peso_max_kb integer defaul
 alter table adstudio_projects add column if not exists media_plan_excluded jsonb default '[]';
 update adstudio_projects set media_plan_excluded = '[]' where media_plan_excluded is null;
 alter table adstudio_projects alter column media_plan_excluded set not null;
+
+-- =========================================================
+-- Bloque 9 — dimensiones del PSD y formato master explícito
+-- =========================================================
+
+-- Dimensiones reales del canvas del PSD (trigger/analyze-psd.ts), para avisar
+-- en el brief si no coinciden con el formato master elegido.
+ALTER TABLE adstudio_projects
+  ADD COLUMN IF NOT EXISTS psd_width integer DEFAULT NULL,
+  ADD COLUMN IF NOT EXISTS psd_height integer DEFAULT NULL;
+
+-- Formato marcado por el usuario como master del proyecto en el brief — solo
+-- uno puede ser true por proyecto (aplicado en app/api/brief/route.ts).
+-- trigger/render-master.ts lo usa en vez de asumir "el de mayor área".
+ALTER TABLE adstudio_formats
+  ADD COLUMN IF NOT EXISTS is_master boolean DEFAULT false;
+UPDATE adstudio_formats SET is_master = false WHERE is_master IS NULL;
+ALTER TABLE adstudio_formats ALTER COLUMN is_master SET NOT NULL;

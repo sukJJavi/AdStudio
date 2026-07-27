@@ -69,7 +69,11 @@ export async function triggerMasterGeneration(
     };
   }
 
-  const iabFormatId = options?.iabFormatId ?? rankFormatsByArea(unblocked)[0]?.format.iab_format;
+  // El formato master es el que el usuario marcó explícitamente en el brief
+  // (adstudio_formats.is_master) — fallback al de mayor área si ninguno lo está
+  // (planes creados antes de que existiera este campo, ver Bloque 9 en CLAUDE.md).
+  const iabFormatId =
+    options?.iabFormatId ?? unblocked.find((f) => f.is_master)?.iab_format ?? rankFormatsByArea(unblocked)[0]?.format.iab_format;
 
   const handle = await tasks.trigger("render-master", {
     projectId,
@@ -77,9 +81,14 @@ export async function triggerMasterGeneration(
     isPrimary: options?.isPrimary ?? true,
   });
 
+  // Regenerar (proyecto ya en master_ready/approved) debe limpiar el HTML5
+  // cacheado igual que la primera generación: si el job falla a mitad, el
+  // preview no debe seguir sirviendo el master_html viejo como si fuera el
+  // nuevo. adaptHtml5ToFormat/getHtml5Master (trigger/render-adaptations.ts)
+  // ya tratan null como "no hay master generado todavía".
   await supabase
     .from("adstudio_projects")
-    .update({ status: "master_generating", master_run_id: handle.id })
+    .update({ status: "master_generating", master_run_id: handle.id, master_html: null })
     .eq("id", projectId);
 
   return { ok: true, runId: handle.id };

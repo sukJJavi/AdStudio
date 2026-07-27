@@ -37,6 +37,9 @@ export type Project = {
   master_html: string | null;
   /** Filas del plan de medios descartadas por parse-media-plan.ts (video/audio/social/etc.), con motivo — se muestran en el brief, nunca se ignoran en silencio. */
   media_plan_excluded: MediaPlanExcludedEntry[];
+  /** Dimensiones reales del canvas del PSD (trigger/analyze-psd.ts), para avisar en el brief si no coinciden con el formato master elegido. */
+  psd_width: number | null;
+  psd_height: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -71,6 +74,8 @@ export type ProjectFormat = {
   copy: string | null;
   /** Peso máximo (KB) detectado en el plan de medios o ajustado a mano en el brief. */
   peso_max_kb: number | null;
+  /** Formato elegido como master del proyecto (ver app/project/[id]/brief) — solo uno puede ser true por proyecto. */
+  is_master: boolean;
   created_at: string;
 };
 

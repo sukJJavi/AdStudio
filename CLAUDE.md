@@ -22,8 +22,9 @@ adaptaciones por formato, animación y exportación.
 /app
   /dashboard          → proyectos del usuario
   /project/[id]
-    /brief            → paso 1: datos campaña + formatos
-    /upload           → paso 2: subida PSD + Excel + animación
+    /brief            → paso 1: datos campaña + formatos + subida del Excel del plan de medios (dispara
+                          parse-media-plan, ver Bloque 8/9) — el Excel se sube aquí, no en /upload
+    /upload           → paso 2: subida PSD(s) + guía de animación (el Excel ya se subió en el brief)
     /analysis         → paso 3: informe de incidencias
     /layers           → paso 4: editor de capas (frame, clasificación, orden, descarte)
     /master           → paso 5: preview y aprobación master
@@ -216,3 +217,30 @@ Single-context layout: `CONTEXT.md` + `docs/adr/` at the repo root, created lazi
   compartirían crop — limitación aceptada, ver comentario en el propio fichero)
 - Fallback si Claude no devuelve un JSON de recorte válido (o falla la llamada):
   center crop calculado localmente según la proporción destino
+
+## Refactoring de flujo (Bloque 9)
+- El Excel del plan de medios se sube en `/brief` (no en `/upload`): zona de drop propia en
+  `components/project/brief-form.tsx`, mismo patrón de subida directa a Storage con progreso
+  (`lib/client-upload.ts`, compartido con `components/project/upload-zones.tsx`). Al terminar, dispara
+  `parse-media-plan` y hace polling de `/api/brief` (sin endpoint de status para ese job) para rellenar
+  la tabla de formatos automáticamente
+- `/upload` queda solo con PSD(s) + guía de animación; el Excel ya existe en `adstudio_assets` para
+  cuando llegue el PSD (el auto-trigger de `analyze-psd` en `app/api/upload/route.ts` sigue exigiendo
+  PSD + Excel, sin cambios)
+- "Continuar al master" (editor de capas) solo bloquea por `NO_USABLE_LAYERS` o `PSD_PARSE_ERROR` —
+  fijado explícitamente por código en `components/project/layers-editor.tsx`
+  (`BLOCKING_INCIDENT_CODES`), no por el nivel "critico"/derivedStatus del análisis. Cualquier otra
+  incidencia (LOW_QUALITY_MAIN_IMAGE, MISSING_COPY, MISSING_MAIN_IMAGE...) es como mucho ATENCIÓN y no
+  impide navegar
+- `adstudio_projects.psd_width/psd_height`: dimensiones reales del canvas del PSD, guardadas en
+  `trigger/analyze-psd.ts` al leer el archivo. El brief avisa (🟡, no bloquea) si no coinciden con las
+  del formato marcado como master
+- Formato master explícito: `adstudio_formats.is_master` (radio button en el brief, solo uno true por
+  proyecto, forzado en `app/api/brief/route.ts`). Por defecto se marca el de mayor área
+  (`withDefaultMaster` en `brief-form.tsx`), pero el usuario puede cambiarlo. `lib/master.ts` y
+  `trigger/render-master.ts` usan el formato marcado en vez de asumir "el de mayor área"; sin ninguno
+  marcado (planes antiguos) caen a ese fallback
+- Regenerar master (botón en `components/project/master-view.tsx`) resetea
+  `adstudio_projects.master_html = null` en `lib/master.ts:triggerMasterGeneration` antes de lanzar el
+  job, para cualquier status de partida (no solo `master_ready`/`approved`) — evita servir el HTML5
+  viejo si el job de regeneración falla a mitad

@@ -269,6 +269,7 @@ export const parseMediaPlan = task({
           status: "pending",
           incidencias: [],
           peso_max_kb: entry.pesoMaxKb,
+          is_master: false,
         });
       }
     }

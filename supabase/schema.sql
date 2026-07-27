@@ -39,6 +39,10 @@ create table if not exists adstudio_projects (
   -- (video/audio/social/etc., ver trigger/parse-media-plan.ts) — se muestran en
   -- el brief como "no producibles" con el motivo, en vez de ocultarse sin más.
   media_plan_excluded jsonb not null default '[]',
+  -- Bloque 9: dimensiones reales del canvas del PSD (trigger/analyze-psd.ts),
+  -- para avisar en el brief si no coinciden con el formato master elegido.
+  psd_width integer default null,
+  psd_height integer default null,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -54,6 +58,8 @@ alter table adstudio_projects add column if not exists master_html text default 
 alter table adstudio_projects add column if not exists media_plan_excluded jsonb default '[]';
 update adstudio_projects set media_plan_excluded = '[]' where media_plan_excluded is null;
 alter table adstudio_projects alter column media_plan_excluded set not null;
+alter table adstudio_projects add column if not exists psd_width integer default null;
+alter table adstudio_projects add column if not exists psd_height integer default null;
 
 create table if not exists adstudio_formats (
   id uuid primary key default gen_random_uuid(),
@@ -68,6 +74,10 @@ create table if not exists adstudio_formats (
   -- Bloque 8: peso máximo (KB) detectado en el plan de medios (columna "Peso"
   -- del Excel) o ajustado a mano en el brief — ver trigger/parse-media-plan.ts.
   peso_max_kb integer default null,
+  -- Bloque 9: formato marcado por el usuario como master del proyecto en el
+  -- brief — solo uno puede ser true por proyecto (app/api/brief/route.ts).
+  -- trigger/render-master.ts lo usa en vez de asumir "el de mayor área".
+  is_master boolean not null default false,
   created_at timestamptz not null default now()
 );
 
@@ -76,6 +86,9 @@ create table if not exists adstudio_formats (
 -- análisis de incidencias para validar longitud contra lib/iab/specs.ts).
 alter table adstudio_formats add column if not exists copy text;
 alter table adstudio_formats add column if not exists peso_max_kb integer default null;
+alter table adstudio_formats add column if not exists is_master boolean default false;
+update adstudio_formats set is_master = false where is_master is null;
+alter table adstudio_formats alter column is_master set not null;
 
 create table if not exists adstudio_assets (
   id uuid primary key default gen_random_uuid(),

@@ -11,6 +11,7 @@ type BriefFormatInput = {
   url_destino?: string | null;
   versiones: number;
   peso_max_kb?: number | null;
+  is_master?: boolean;
 };
 
 type BriefPayload = {
@@ -39,6 +40,10 @@ function validatePayload(payload: BriefPayload): string | null {
       return `El soporte "${format.nombre_soporte}" necesita al menos 1 versión.`;
     }
   }
+
+  const masterCount = payload.formats.filter((f) => f.is_master).length;
+  if (masterCount > 1) return "Solo un soporte puede estar marcado como formato master.";
+
   return null;
 }
 
@@ -118,6 +123,7 @@ export async function POST(req: NextRequest) {
         url_destino: f.url_destino ?? null,
         versiones: f.versiones,
         peso_max_kb: f.peso_max_kb ?? null,
+        is_master: !!f.is_master,
         status: "pending",
       })),
     );
@@ -181,6 +187,7 @@ export async function PUT(req: NextRequest) {
         url_destino: f.url_destino ?? null,
         versiones: f.versiones,
         peso_max_kb: f.peso_max_kb ?? null,
+        is_master: !!f.is_master,
         status: "pending",
       })),
     );
