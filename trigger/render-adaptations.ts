@@ -2,8 +2,8 @@ import { task, metadata } from "@trigger.dev/sdk/v3";
 import { createTriggerSupabaseClient } from "@/lib/supabase/trigger-client";
 import { getIABFormatById, type IABFormat } from "@/lib/iab/specs";
 import { unblockedFormats } from "@/lib/iab/incident-analyzer";
-import { downloadAsset } from "@/lib/render/assets";
-import { adaptHtml5ToFormatWithClaude } from "@/lib/render/html5-generator";
+import { downloadAsset, pickLargestBy } from "@/lib/render/assets";
+import { adaptHtml5ToFormatWithClaude, type MasterFallbackReference } from "@/lib/render/html5-generator";
 import { getHtml5Master } from "@/lib/render/html5-cache";
 import { renderFallbackFromFrame } from "@/lib/render/fallback-composite";
 import { exportBufferFor, exportFilenameFor } from "@/lib/render/export-format";
@@ -25,6 +25,41 @@ type RenderAdaptationsPayload = {
 function assetFilename(asset: ProjectAsset): string | null {
   const filename = (asset.metadata as TextLayerMetadata | undefined)?.filename;
   return typeof filename === "string" && filename.trim() ? filename : null;
+}
+
+/**
+ * Carga el fallback.jpg del master (referencia visual para Claude en cada
+ * adaptación) desde adstudio_masters.jpg_path — la fila is_primary, o
+ * cualquiera si no hay ninguna marcada. Si la fila o el fichero no existen,
+ * lo compone al vuelo con las capas reales del proyecto (mismo criterio que
+ * render-master.ts, sin Claude Vision).
+ */
+async function loadMasterFallback(
+  projectId: string,
+  masterSpec: { ancho: number; alto: number },
+  allAssets: ProjectAsset[],
+  supabase: ReturnType<typeof createTriggerSupabaseClient>,
+): Promise<MasterFallbackReference> {
+  const { data: masterRows } = await supabase
+    .from("adstudio_masters")
+    .select("jpg_path, width, height, is_primary")
+    .eq("project_id", projectId)
+    .order("is_primary", { ascending: false });
+
+  const masterRow = masterRows?.[0];
+
+  if (masterRow?.jpg_path) {
+    const buffer = await downloadAsset(supabase, masterRow.jpg_path);
+    if (buffer) return { buffer, width: masterRow.width, height: masterRow.height };
+  }
+
+  const buffer = await renderFallbackFromFrame(
+    projectId,
+    { width: masterSpec.ancho, height: masterSpec.alto },
+    allAssets,
+    supabase,
+  );
+  return { buffer, width: masterSpec.ancho, height: masterSpec.alto };
 }
 
 export const renderAdaptations = task({
@@ -50,12 +85,31 @@ export const renderAdaptations = task({
       throw new Error("No hay HTML5 de master generado. Genera el master antes de producir adaptaciones.");
     }
 
+    const allFormatsWithSpec = pickLargestBy(
+      ((allFormats ?? []) as ProjectFormat[])
+        .map((format) => ({ format, spec: getIABFormatById(format.iab_format) }))
+        .filter((x): x is { format: ProjectFormat; spec: IABFormat } => x.spec != null),
+      (x) => x.spec.ancho * x.spec.alto,
+    );
+
+    // El formato master no se "adapta" a sí mismo — se excluye del loop de
+    // abajo y su fallback.jpg sirve de referencia visual para Claude en cada
+    // adaptación (ver loadMasterFallback). Mismo criterio que lib/master.ts /
+    // trigger/render-master.ts: el marcado is_master, o el de mayor área si
+    // ninguno lo está (planes creados antes de ese campo).
+    const masterEntry = allFormatsWithSpec.find((x) => x.format.is_master) ?? allFormatsWithSpec[0];
+
+    if (!masterEntry) {
+      throw new Error("El proyecto no tiene formatos con especificación IAB válida.");
+    }
+
     const formatsToProduce = unblockedFormats((allFormats ?? []) as ProjectFormat[])
+      .filter((format) => format.id !== masterEntry.format.id)
       .map((format) => ({ format, spec: getIABFormatById(format.iab_format) }))
       .filter((x): x is { format: ProjectFormat; spec: IABFormat } => x.spec != null);
 
     if (formatsToProduce.length === 0) {
-      throw new Error("No hay formatos disponibles para producir (todos bloqueados o sin especificación IAB).");
+      throw new Error("No hay formatos disponibles para producir (todos bloqueados, sin especificación IAB, o es el master).");
     }
 
     const allAssets = (assets ?? []) as ProjectAsset[];
@@ -88,6 +142,16 @@ export const renderAdaptations = task({
       )
     ).filter((entry): entry is { filename: string; buffer: Buffer } => entry != null);
 
+    // Mismos buffers que pngEntries, indexados por filename: Claude Vision los
+    // recibe como imágenes en el mensaje de cada adaptación (ver
+    // adaptHtml5ToFormatWithClaude) — no se vuelven a descargar por formato.
+    const assetBuffers = new Map(pngEntries.map((entry) => [entry.filename, entry.buffer]));
+
+    metadata.set("step", "cargando-fallback-del-master");
+    metadata.set("progress", 0.1);
+
+    const masterFallback = await loadMasterFallback(payload.projectId, masterEntry.spec, allAssets, supabase);
+
     const zipEntries: ZipFileEntry[] = [];
     const manifestPieces: ManifestPieceEntry[] = [];
     const total = formatsToProduce.length;
@@ -105,15 +169,17 @@ export const renderAdaptations = task({
       await supabase.from("adstudio_formats").update({ status: "producing" }).eq("id", format.id);
 
       try {
-        // Una llamada a Claude por formato: recompone el layout completo del
-        // master para las nuevas dimensiones (posiciones, tamaños, jerarquía
-        // visual), no un reescalado mecánico del #ad — ver
-        // lib/render/html5-generator.ts:adaptHtml5ToFormatWithClaude.
-        const adaptedHtml = await adaptHtml5ToFormatWithClaude(masterHtml, allAssets, {
-          width: spec.ancho,
-          height: spec.alto,
-          iabFormat: format.iab_format,
-        });
+        // Una llamada a Claude Vision por formato: recompone el layout
+        // completo del master para las nuevas dimensiones viendo el
+        // fallback.jpg del master y cada asset como imagen, no solo texto —
+        // ver lib/render/html5-generator.ts:adaptHtml5ToFormatWithClaude.
+        const adaptedHtml = await adaptHtml5ToFormatWithClaude(
+          masterHtml,
+          allAssets,
+          { width: spec.ancho, height: spec.alto, iabFormat: format.iab_format },
+          assetBuffers,
+          masterFallback,
+        );
 
         // El fallback.jpg se compone con sharp igual que el master (capas
         // reales del frame del CTA + persistentes) — sin Claude Vision ni

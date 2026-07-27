@@ -1,4 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type Anthropic from "@anthropic-ai/sdk";
 import { createClaudeClient } from "@/lib/claude/client";
 import { exportFilenameFor } from "@/lib/render/export-format";
 import type { LayerBounds, ProjectAsset, TextLayerMetadata } from "@/lib/types";
@@ -157,68 +158,79 @@ export async function generateHtml5Master(
   return { html, assetFilenames: descriptors.map((d) => d.filename) };
 }
 
-/**
- * System prompt de la adaptación (trigger/render-adaptations.ts): a diferencia
- * de generateHtml5Master, aquí Claude recibe el HTML5 completo del master y
- * debe recomponer el layout para el nuevo formato, no solo reescalar el
- * canvas — un banner de 300x600 no funciona con un resize mecánico a 728x90.
- */
-function buildAdaptSystemPrompt(targetWidth: number, targetHeight: number): string {
-  return `Eres un productor experto en publicidad digital HTML5 con 20 años de experiencia adaptando campañas de display IAB.
+type AdaptContentBlock = Anthropic.Messages.TextBlockParam | Anthropic.Messages.ImageBlockParam;
 
-Recibes el HTML5 de un banner master y debes adaptarlo a un nuevo formato manteniendo la identidad visual y la animación, pero recomponiendo el layout para que funcione en las nuevas dimensiones.
-
-REGLAS:
-- Usa exactamente los mismos filenames de assets que el master
-- Mantén la misma animación y timing del master
-- Recompón el layout: posiciones, tamaños, jerarquía visual
-- El texto debe ser legible en el nuevo formato
-- Respeta las zonas seguras IAB (10px mínimo)
-- El #ad debe tener exactamente ${targetWidth}x${targetHeight}px
-- border: 1px solid #000 en el #ad siempre
-- clickTag idéntico al master
-- NUNCA uses reglas CSS globales como '#ad img{width:100%}'
-
-Devuelve SOLO el HTML completo sin explicaciones ni bloques markdown, empezando con <!doctype html>`;
+function textContentBlock(text: string): AdaptContentBlock {
+  return { type: "text", text };
 }
 
-/** Líneas `filename: WxH` para el user message de la adaptación — mismo criterio de filename que el master (usableAssetDescriptors, con exportFilenameFor aplicado). */
-function assetDimensionLines(assets: ProjectAsset[]): string[] {
-  return usableAssetDescriptors(assets)
-    .filter((d) => d.layer_bounds != null)
-    .map((d) => `${d.filename}: ${d.layer_bounds!.width}x${d.layer_bounds!.height}px`);
+/** `.jpg`/`.jpeg` → image/jpeg, cualquier otra cosa (siempre `.png` en la práctica) → image/png. */
+function imageMediaTypeFor(filename: string): "image/jpeg" | "image/png" {
+  return /\.jpe?g$/i.test(filename) ? "image/jpeg" : "image/png";
 }
 
+function imageContentBlock(mediaType: "image/jpeg" | "image/png", buffer: Buffer): AdaptContentBlock {
+  return { type: "image", source: { type: "base64", media_type: mediaType, data: buffer.toString("base64") } };
+}
+
+/** JPG de respaldo del master ya generado (trigger/render-master.ts) + sus dimensiones reales. */
+export type MasterFallbackReference = { buffer: Buffer; width: number; height: number };
+
 /**
- * Adapta el HTML5 del master a otro formato IAB con una llamada a Claude por
- * formato (trigger/render-adaptations.ts): a diferencia del reescalado
- * mecánico anterior, Claude recompone el layout completo — necesario porque
- * un master de 300x600 no cabe razonablemente en, por ejemplo, 728x90 con
- * solo cambiar las dimensiones del `#ad`. Los assets (PNG/JPG) son los mismos
- * del master; Claude decide cómo posicionarlos, no se recortan ni regeneran.
+ * Adapta el HTML5 del master a otro formato IAB con una llamada a Claude
+ * VISION por formato (trigger/render-adaptations.ts). A diferencia de la
+ * primera versión (solo texto: HTML + lista de filenames), Claude ahora VE el
+ * fallback.jpg del master y cada asset individual como imagen — puede
+ * recomponer el layout con criterio visual real en vez de adivinar posiciones
+ * a partir de nombres de fichero y números. Los assets (PNG/JPG) son los
+ * mismos del master; Claude decide cómo posicionarlos, no se recortan ni
+ * regeneran (smart crop, lib/render/smart-crop.ts, no se usa aquí).
  */
 export async function adaptHtml5ToFormatWithClaude(
   masterHtml: string,
   assets: ProjectAsset[],
   targetFormat: Html5FormatSpec,
+  assetBuffers: Map<string, Buffer>,
+  masterFallback: MasterFallbackReference,
 ): Promise<string> {
-  const userMessage = [
-    "Master HTML:",
+  const descriptors = usableAssetDescriptors(assets);
+
+  const assetImageBlocks: AdaptContentBlock[] = descriptors.flatMap((d) => {
+    const buffer = assetBuffers.get(d.filename);
+    if (!buffer) return [];
+    const dims = d.layer_bounds ? `${d.layer_bounds.width}x${d.layer_bounds.height}px` : "dimensiones desconocidas";
+    return [textContentBlock(`${d.filename} (${dims}):`), imageContentBlock(imageMediaTypeFor(d.filename), buffer)];
+  });
+
+  const instructions = [
+    "HTML5 del master para referencia de animación y estructura:",
     masterHtml,
     "",
-    "Assets disponibles (filename → dimensiones reales):",
-    assetDimensionLines(assets).join("\n"),
-    "",
     `Adapta este banner a ${targetFormat.width}x${targetFormat.height}px.`,
-    "Toma las decisiones creativas que necesites para que la pieza funcione correctamente en este formato.",
+    "Tienes acceso visual a todos los assets y al master.",
+    "Toma las decisiones creativas necesarias para que la pieza funcione profesionalmente en este formato.",
+    "Usa los mismos filenames de assets que el master.",
+    "Respeta las zonas seguras IAB (10px mínimo), mantén el mismo clickTag que el master, y el #ad con border: 1px solid #000 y exactamente " +
+      `${targetFormat.width}x${targetFormat.height}px.`,
+    "NUNCA uses reglas CSS globales como '#ad img{width:100%}'.",
+    "Devuelve SOLO el HTML completo comenzando con <!doctype html>",
   ].join("\n");
+
+  const content: AdaptContentBlock[] = [
+    textContentBlock(
+      `Eres un productor experto en publicidad digital HTML5 con 20 años de experiencia adaptando campañas de display IAB.\nEste es el banner master (${masterFallback.width}x${masterFallback.height}px):`,
+    ),
+    imageContentBlock("image/jpeg", masterFallback.buffer),
+    textContentBlock("Estos son los assets individuales disponibles:"),
+    ...assetImageBlocks,
+    textContentBlock(instructions),
+  ];
 
   const client = createClaudeClient();
   const response = await client.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 8000,
-    system: buildAdaptSystemPrompt(targetFormat.width, targetFormat.height),
-    messages: [{ role: "user", content: userMessage }],
+    max_tokens: 4096,
+    messages: [{ role: "user", content }],
   });
 
   const textBlock = response.content.find((block) => block.type === "text");

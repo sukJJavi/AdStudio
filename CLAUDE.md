@@ -65,11 +65,12 @@ adaptaciones por formato, animación y exportación.
   /render-master.ts   → job: JPG/PNG de respaldo (Satori+Resvg, aplica font_primary) + HTML5 del master vía
                           Claude (1 sola llamada, ver html5-generator.ts) + ZIP (index.html + PNGs de capas +
                           fallback.jpg) subido a {project_id}/master/master.zip
-  /render-adaptations.ts → job: todos los formatos no bloqueados → HTML5 adaptado del master con 1 llamada
-                          a Claude por formato (adaptHtml5ToFormatWithClaude, recompone el layout completo,
-                          no reescala el #ad mecánicamente) + fallback.jpg compuesto con sharp igual que el
-                          master (renderFallbackFromFrame, sin Claude Vision) → ZIP global, una carpeta por
-                          medio en adstudio_formats.soportes (pieceFoldersFor en lib/export/zip.ts)
+  /render-adaptations.ts → job: excluye el formato master (adstudio_formats.is_master, o el de mayor área
+                          si ninguno lo está) y adapta el resto con 1 llamada a Claude VISION por formato
+                          (adaptHtml5ToFormatWithClaude — ve el fallback.jpg del master y cada asset como
+                          imagen, no solo texto) + fallback.jpg compuesto con sharp igual que el master
+                          (renderFallbackFromFrame, sin Claude Vision) → ZIP global, una carpeta por medio en
+                          adstudio_formats.soportes (pieceFoldersFor en lib/export/zip.ts)
 
 /lib
   /iab                → specs IAB (dimensiones, pesos, zonas seguras) + análisis de incidencias
@@ -84,9 +85,13 @@ adaptaciones por formato, animación y exportación.
     /html5-generator.ts → generateHtml5Master: 1 llamada a Claude por proyecto (el master), genera el HTML5
                           de producción (assets referenciados por filename externo, nunca en base64) —
                           ver prompt de agente en el propio fichero. adaptHtml5ToFormatWithClaude: 1 llamada
-                          a Claude POR FORMATO de adaptación — recibe el HTML5 completo del master y lo
-                          recompone para las nuevas dimensiones (layout, no solo el tamaño del #ad); los
-                          assets son los mismos del master, Claude decide cómo posicionarlos
+                          a Claude VISION por formato de adaptación — el mensaje mezcla texto e imágenes
+                          (content array): el fallback.jpg del master, cada asset individual con su filename
+                          y dimensiones reales, el HTML5 del master como texto, y las instrucciones de
+                          adaptación. Claude ve visualmente el banner y cada pieza suelta antes de recomponer
+                          el layout para las nuevas dimensiones — no solo texto/JSON como en generateHtml5Master.
+                          Los assets son los mismos del master (Map<filename, Buffer>, descargados una única
+                          vez en trigger/render-adaptations.ts); Claude decide cómo posicionarlos
     /html5-cache.ts     → saveHtml5Master/getHtml5Master: cachea el HTML5 del master en
                           adstudio_projects.master_html — evita volver a llamar a Claude para regenerar el
                           master en cada adaptación (cada adaptación sí llama a Claude una vez, para
