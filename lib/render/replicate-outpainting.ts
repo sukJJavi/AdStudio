@@ -123,13 +123,16 @@ export async function adaptImageAsset(
     const output = await replicate.run("black-forest-labs/flux-kontext-pro", {
       input: {
         input_image: imageUrl,
-        prompt: `Reframe this advertising image from ${sourceWidth}x${sourceHeight}px
-to ${targetWidth}x${targetHeight}px.
-Main subject: ${subjectDescription}.
-Keep the main subject clearly visible and well-framed.
-Leave negative space for text overlay on sides or bottom.
-Maintain original colors, lighting and atmosphere.
-No text generation. No watermarks.`,
+        prompt: `Reframe this advertising image to ${targetWidth}x${targetHeight}px.
+Main subject detected: ${subjectDescription}.
+IMPORTANT: Keep the main subject (person/product)
+centered or slightly left-of-center.
+Leave the right side or bottom area with less visual
+complexity so advertising text can be overlaid there.
+Maintain original colors, lighting, style and atmosphere.
+Do not add any text or watermarks.
+The result should look like a professional advertising
+background image.`,
         aspect_ratio: aspectRatio,
         output_format: "png",
         safety_tolerance: 6,

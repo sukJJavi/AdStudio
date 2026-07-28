@@ -231,7 +231,10 @@ export async function adaptHtml5WithVision(
   const client = createClaudeClient();
   const response = await client.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 4096,
+    // Los HTMLs de adaptación son más largos que los del master: Claude
+    // reescribe el CSS completo por formato, y con 4096 el HTML salía
+    // truncado en formatos grandes/complejos.
+    max_tokens: 8192,
     messages: [{ role: "user", content }],
   });
 
