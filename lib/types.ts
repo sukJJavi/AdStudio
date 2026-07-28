@@ -184,6 +184,7 @@ export type ApprovalToken = {
   token: string;
   expires_at: string | null;
   approved_at: string | null;
+  created_at: string;
 };
 
 export type MasterRecord = {

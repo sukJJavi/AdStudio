@@ -74,6 +74,9 @@ export async function createApprovalLink(
   return { ok: true, token: tokenRow.token as string, url };
 }
 
+export type { ApprovalStatus } from "@/lib/approval-status";
+export { getApprovalStatus } from "@/lib/approval-status";
+
 export type ApprovalContext =
   | { state: "not_found" }
   | { state: "expired" }

@@ -22,5 +22,5 @@ export default async function DeliveryPage({
     );
   }
 
-  return <DeliveryView pieces={info.pieces} zip={info.zip} />;
+  return <DeliveryView projectId={info.projectId} pieces={info.pieces} zip={info.zip} />;
 }

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
+import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { MasterChangeEntry, MasterStatusResponse } from "@/lib/master";
 
@@ -52,8 +53,12 @@ export function MasterView({
   const [regeneratingMaster, setRegeneratingMaster] = useState(false);
 
   const [sendingApproval, setSendingApproval] = useState(false);
-  const [approvalUrl, setApprovalUrl] = useState<string | null>(null);
   const [approvalError, setApprovalError] = useState<string | null>(null);
+  const [approvalCopied, setApprovalCopied] = useState(false);
+  // El origin solo existe en el navegador — se resuelve tras montar para no
+  // desincronizar el render de servidor/cliente (hydration mismatch).
+  const [origin, setOrigin] = useState<string | null>(null);
+  useEffect(() => setOrigin(window.location.origin), []);
 
   const [changeText, setChangeText] = useState("");
   const [changes, setChanges] = useState<MasterChangeEntry[]>(initialChanges);
@@ -152,7 +157,6 @@ export function MasterView({
   async function handleSendApproval() {
     setSendingApproval(true);
     setApprovalError(null);
-    setApprovalUrl(null);
 
     try {
       const res = await fetch("/api/master/approve-link", {
@@ -167,11 +171,29 @@ export function MasterView({
         return;
       }
 
-      setApprovalUrl(data.url as string);
+      // El endpoint solo devuelve { token, url } — se recarga el status
+      // completo para tener expiresAt/approvedAt y que la sección
+      // permanente de abajo (Enlace de aprobación del cliente) se actualice.
+      try {
+        const statusRes = await fetch(`/api/master/status/${projectId}`, { cache: "no-store" });
+        if (statusRes.ok) setStatus(await statusRes.json());
+      } catch {
+        // Best-effort: si falla, el próximo refresh del status lo recoge.
+      }
     } catch {
       setApprovalError("Error de red al enviar el master.");
     } finally {
       setSendingApproval(false);
+    }
+  }
+
+  async function handleCopyApprovalUrl(url: string) {
+    try {
+      await navigator.clipboard.writeText(url);
+      setApprovalCopied(true);
+      setTimeout(() => setApprovalCopied(false), 3000);
+    } catch {
+      // Best-effort: si falla el clipboard, el usuario puede seleccionar el texto a mano.
     }
   }
 
@@ -223,6 +245,72 @@ export function MasterView({
           Previsualiza y aprueba el master antes de lanzar la producción de adaptaciones.
         </p>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Enlace de aprobación del cliente</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {status.approval.state === "none" && (
+            <>
+              <p className="text-sm text-muted-foreground">
+                Todavía no se ha generado un enlace de aprobación para este proyecto.
+              </p>
+              <Button onClick={handleSendApproval} disabled={sendingApproval || !hasMaster}>
+                {sendingApproval ? "Generando..." : "Generar link"}
+              </Button>
+              {!hasMaster && (
+                <p className="text-xs text-muted-foreground">Genera el master antes de crear el link.</p>
+              )}
+            </>
+          )}
+
+          {status.approval.state !== "none" && (() => {
+            const approval = status.approval;
+            const approvalUrl = origin ? `${origin}/approve/${approval.token}` : null;
+            return (
+              <>
+                <div className="flex flex-wrap items-center gap-2">
+                  {approval.state === "approved" && (
+                    <Badge className="bg-[#34C759] text-white">Aprobado ✓</Badge>
+                  )}
+                  {approval.state === "pending" && <Badge variant="secondary">Pendiente de aprobación</Badge>}
+                  {approval.state === "changes_requested" && (
+                    <Badge className="bg-[#FF8A8A] text-black">Cambios solicitados</Badge>
+                  )}
+                  {approval.state === "approved" && approval.approvedAt && (
+                    <span className="text-xs text-muted-foreground">
+                      Aprobado el {new Date(approval.approvedAt).toLocaleString()}
+                    </span>
+                  )}
+                  {approval.expiresAt && (
+                    <span className="text-xs text-muted-foreground">
+                      · Expira el {new Date(approval.expiresAt).toLocaleString()}
+                    </span>
+                  )}
+                </div>
+
+                {approvalUrl && (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <code className="break-all rounded bg-muted px-2 py-1 text-xs">{approvalUrl}</code>
+                    <Button variant="outline" size="sm" onClick={() => handleCopyApprovalUrl(approvalUrl)}>
+                      {approvalCopied ? "Copiado" : "Copiar"}
+                    </Button>
+                  </div>
+                )}
+              </>
+            );
+          })()}
+
+          {status.approval.state !== "none" && (
+            <Button variant="outline" size="sm" onClick={handleSendApproval} disabled={sendingApproval}>
+              {sendingApproval ? "Generando..." : "Generar nuevo link"}
+            </Button>
+          )}
+
+          {approvalError && <p className="text-sm text-destructive">{approvalError}</p>}
+        </CardContent>
+      </Card>
 
       {!hasMaster && !isGenerating && (
         <Card>
@@ -349,12 +437,6 @@ export function MasterView({
                 </div>
 
                 {genError && <p className="text-sm text-destructive">{genError}</p>}
-                {approvalError && <p className="text-sm text-destructive">{approvalError}</p>}
-                {approvalUrl && (
-                  <p className="text-sm text-[#34C759]">
-                    Enviado. Link de aprobación: <span className="break-all">{approvalUrl}</span>
-                  </p>
-                )}
                 {status.projectStatus === "approved" && (
                   <p className="text-sm text-[#34C759]">El cliente ya aprobó este master.</p>
                 )}

@@ -30,6 +30,12 @@ function assetFilename(asset: ProjectAsset): string | null {
   return typeof filename === "string" && filename.trim() ? filename : null;
 }
 
+function contentTypeForFilename(filename: string): string {
+  return filename.toLowerCase().endsWith(".jpg") || filename.toLowerCase().endsWith(".jpeg")
+    ? "image/jpeg"
+    : "image/png";
+}
+
 /**
  * Clasificaciones cuya capa se reencuadra por formato con FLUX Kontext
  * (lib/render/replicate-outpainting.ts:adaptImageAsset) antes de pasarla a
@@ -249,6 +255,21 @@ export const renderAdaptations = task({
           buffer: formatAssetBuffers.get(entry.filename) ?? entry.buffer,
         }));
 
+        // Assets del formato (incluye fondo/imagen_principal ya reencuadrados
+        // con FLUX, que solo existían en memoria) — persistidos por format.id
+        // para que app/api/preview/[projectId]/adaptation/[formatId] pueda
+        // servirlos en el iframe de app/project/[id]/delivery.
+        await Promise.all(
+          formatPngEntries.map((png) =>
+            supabase.storage
+              .from("adstudio-projects")
+              .upload(`${payload.projectId}/adaptations/${format.id}/${png.filename}`, png.buffer, {
+                contentType: contentTypeForFilename(png.filename),
+                upsert: true,
+              }),
+          ),
+        );
+
         const pieceFolders = pieceFoldersFor(format);
         for (const pieceFolder of pieceFolders) {
           zipEntries.push({ path: `${pieceFolder}/index.html`, content: adaptedHtml });
@@ -311,6 +332,19 @@ export const renderAdaptations = task({
               }),
           )
         ).filter((entry): entry is { filename: string; buffer: Buffer } => entry != null);
+
+        // Mismo criterio que formatPngEntries arriba: persistidos por
+        // format.id para el iframe de preview de adaptaciones.
+        await Promise.all(
+          ownPngEntries.map((png) =>
+            supabase.storage
+              .from("adstudio-projects")
+              .upload(`${payload.projectId}/adaptations/${format.id}/${png.filename}`, png.buffer, {
+                contentType: contentTypeForFilename(png.filename),
+                upsert: true,
+              }),
+          ),
+        );
 
         const pieceFolders = pieceFoldersFor(format);
         for (const pieceFolder of pieceFolders) {

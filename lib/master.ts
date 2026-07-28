@@ -4,6 +4,7 @@ import { createSessionSupabaseClient } from "@/lib/supabase/server-session";
 import { getIABFormatById, type IABFormat } from "@/lib/iab/specs";
 import { unblockedFormats } from "@/lib/iab/incident-analyzer";
 import { createClaudeClient } from "@/lib/claude/client";
+import { getApprovalStatus, type ApprovalStatus } from "@/lib/approval-status";
 import type { ChangeType, MasterRecord, Project, ProjectFormat, Tier } from "@/lib/types";
 
 const SIGNED_URL_TTL_SECONDS = 600;
@@ -120,6 +121,8 @@ export type MasterStatusResponse = {
   hasHtml5: boolean;
   /** Peso de `{project_id}/master/master.zip`, para mostrar junto al preview. */
   zipSizeBytes: number | null;
+  /** Enlace de aprobación del cliente más reciente — se muestra de forma permanente en master-view.tsx. */
+  approval: ApprovalStatus;
 };
 
 export async function getMasterStatus(projectId: string): Promise<MasterStatusResponse | null> {
@@ -177,6 +180,8 @@ export async function getMasterStatus(projectId: string): Promise<MasterStatusRe
   const { data: masterFolderList } = await supabase.storage.from("adstudio-projects").list(`${projectId}/master`);
   const zipSizeBytes = masterFolderList?.find((f) => f.name === "master.zip")?.metadata?.size ?? null;
 
+  const approval = await getApprovalStatus(projectId);
+
   return {
     projectStatus: project.status,
     step,
@@ -184,6 +189,7 @@ export async function getMasterStatus(projectId: string): Promise<MasterStatusRe
     masters,
     hasHtml5: !!project.master_html,
     zipSizeBytes,
+    approval,
   };
 }
 

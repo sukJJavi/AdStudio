@@ -221,3 +221,13 @@ ALTER TABLE adstudio_formats
 -- concreto cuando el proyecto tiene varios masters (uno por PSD).
 ALTER TABLE adstudio_masters
   ADD COLUMN IF NOT EXISTS format_id uuid DEFAULT NULL REFERENCES adstudio_formats(id) ON DELETE SET NULL;
+
+-- =========================================================
+-- Bloque 12 — enlace de aprobación siempre visible
+-- =========================================================
+
+-- Sin created_at no hay forma de saber cuál es el token de aprobación más
+-- reciente cuando un proyecto acumula varios (cada "Enviar al cliente" crea
+-- uno nuevo) — ver lib/approval.ts:getApprovalStatus.
+ALTER TABLE adstudio_approval_tokens
+  ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();

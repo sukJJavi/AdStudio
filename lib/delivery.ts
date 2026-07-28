@@ -14,6 +14,7 @@ export type DeliveryPiece = {
   width: number | null;
   height: number | null;
   fallbackJpgUrl: string | null;
+  jpgSizeBytes: number | null;
 };
 
 export type DeliveryZipInfo = {
@@ -23,6 +24,7 @@ export type DeliveryZipInfo = {
 };
 
 export type DeliveryInfo = {
+  projectId: string;
   projectStatus: Project["status"];
   pieces: DeliveryPiece[];
   zip: DeliveryZipInfo | null;
@@ -48,10 +50,19 @@ export async function getDeliveryInfo(projectId: string): Promise<DeliveryInfo |
   const pieces: DeliveryPiece[] = await Promise.all(
     ((formats ?? []) as ProjectFormat[]).map(async (format) => {
       const spec = getIABFormatById(format.iab_format);
-      const path = `${projectId}/adaptations/${format.iab_format}/fallback.jpg`;
-      const { data: signed } = await supabase.storage
-        .from("adstudio-projects")
-        .createSignedUrl(path, PIECE_SIGNED_URL_TTL_SECONDS);
+      // Bloque 11: formatos con PSD propio suben su fallback.jpg a
+      // masters/{format.id}/, el resto a adaptations/{iab_format}/ (ver
+      // trigger/render-master.ts y trigger/render-adaptations.ts).
+      const folder = format.source_psd_id ? `${projectId}/masters/${format.id}` : `${projectId}/adaptations/${format.iab_format}`;
+      const filenamePrefix = format.source_psd_id ? format.iab_format : "fallback";
+      const path = `${folder}/${filenamePrefix}.jpg`;
+
+      const [{ data: signed }, { data: listing }] = await Promise.all([
+        supabase.storage.from("adstudio-projects").createSignedUrl(path, PIECE_SIGNED_URL_TTL_SECONDS),
+        supabase.storage.from("adstudio-projects").list(folder),
+      ]);
+
+      const jpgSizeBytes = listing?.find((f) => f.name === `${filenamePrefix}.jpg`)?.metadata?.size ?? null;
 
       return {
         id: format.id,
@@ -60,6 +71,7 @@ export async function getDeliveryInfo(projectId: string): Promise<DeliveryInfo |
         width: spec?.ancho ?? null,
         height: spec?.alto ?? null,
         fallbackJpgUrl: signed?.signedUrl ?? null,
+        jpgSizeBytes,
       };
     }),
   );
@@ -84,5 +96,5 @@ export async function getDeliveryInfo(projectId: string): Promise<DeliveryInfo |
     };
   }
 
-  return { projectStatus: project.status, pieces, zip };
+  return { projectId, projectStatus: project.status, pieces, zip };
 }

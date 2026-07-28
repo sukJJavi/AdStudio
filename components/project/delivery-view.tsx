@@ -5,16 +5,62 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import type { DeliveryPiece, DeliveryZipInfo } from "@/lib/delivery";
 
+const MAX_PREVIEW_WIDTH = 400;
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/** Escalado del iframe manteniendo proporción, tope MAX_PREVIEW_WIDTH de ancho en el grid. */
+function scaledDimensions(width: number | null, height: number | null): { width: number; height: number; scale: number } {
+  const nativeWidth = width ?? 300;
+  const nativeHeight = height ?? 250;
+  const scale = Math.min(1, MAX_PREVIEW_WIDTH / nativeWidth);
+  return { width: Math.round(nativeWidth * scale), height: Math.round(nativeHeight * scale), scale };
+}
+
+function PiecePreview({ projectId, piece }: { projectId: string; piece: DeliveryPiece }) {
+  const nativeWidth = piece.width ?? 300;
+  const nativeHeight = piece.height ?? 250;
+  const { width: boxWidth, height: boxHeight, scale } = scaledDimensions(piece.width, piece.height);
+  const previewUrl = `/api/preview/${projectId}/adaptation/${piece.id}`;
+
+  return (
+    <div
+      className="relative overflow-hidden rounded-md border border-border bg-[#070A0F]"
+      style={{ width: boxWidth, height: boxHeight }}
+    >
+      <iframe
+        src={previewUrl}
+        title={`Preview HTML5 — ${piece.nombreSoporte}`}
+        style={{
+          width: nativeWidth,
+          height: nativeHeight,
+          border: 0,
+          transform: `scale(${scale})`,
+          transformOrigin: "0 0",
+          pointerEvents: "none",
+        }}
+      />
+      {/* Overlay clicable: abre el HTML5 a tamaño real en una pestaña nueva en vez de interactuar con el iframe escalado. */}
+      <button
+        type="button"
+        aria-label={`Abrir ${piece.nombreSoporte} a tamaño real`}
+        onClick={() => window.open(previewUrl, "_blank", "noopener,noreferrer")}
+        className="absolute inset-0 cursor-zoom-in bg-transparent"
+      />
+    </div>
+  );
+}
+
 export function DeliveryView({
+  projectId,
   pieces,
   zip,
 }: {
+  projectId: string;
   pieces: DeliveryPiece[];
   zip: DeliveryZipInfo | null;
 }) {
@@ -70,17 +116,11 @@ export function DeliveryView({
           {pieces.map((piece) => (
             <Card key={piece.id}>
               <CardContent className="space-y-2 pt-4">
-                {piece.fallbackJpgUrl && (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={piece.fallbackJpgUrl}
-                    alt={piece.nombreSoporte}
-                    className="w-full rounded-md border border-border"
-                  />
-                )}
+                <PiecePreview projectId={projectId} piece={piece} />
                 <p className="text-sm font-medium">{piece.nombreSoporte}</p>
                 <p className="text-xs text-muted-foreground">
                   {piece.iabFormat} · {piece.width}×{piece.height}px
+                  {piece.jpgSizeBytes != null ? ` · ${formatBytes(piece.jpgSizeBytes)}` : ""}
                 </p>
               </CardContent>
             </Card>

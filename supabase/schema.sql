@@ -205,8 +205,13 @@ create table if not exists adstudio_approval_tokens (
   project_id uuid not null references adstudio_projects(id) on delete cascade,
   token uuid not null default gen_random_uuid(),
   expires_at timestamptz,
-  approved_at timestamptz
+  approved_at timestamptz,
+  -- Bloque 12: permite identificar el token más reciente cuando el proyecto
+  -- acumula varios (ver lib/approval.ts:getApprovalStatus).
+  created_at timestamptz not null default now()
 );
+
+alter table adstudio_approval_tokens add column if not exists created_at timestamptz not null default now();
 
 create table if not exists adstudio_subscriptions (
   id uuid primary key default gen_random_uuid(),

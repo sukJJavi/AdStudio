@@ -67,6 +67,7 @@ export default async function MasterPage({
             masters: [],
             hasHtml5: false,
             zipSizeBytes: null,
+            approval: { state: "none" },
           }
         }
         formatsSummary={{ ready: unblocked.length, blocked: formats.length - unblocked.length }}
