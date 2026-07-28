@@ -76,30 +76,42 @@ export async function renderTextAsPng(opts: TextRenderOptions): Promise<Buffer> 
   const areaHeight = Math.max(1, Math.round(opts.sourceLayerBounds.height * scaleFactor));
 
   // 3. Registrar la fuente en node-canvas — necesita un path real en disco.
+  // El family name debe ser simple: un fontName tal cual viene de Photoshop
+  // (p. ej. "FranklinGothicATF-BoldItalic") incluye guiones/sufijos de peso
+  // que ctx.font no resuelve como family — normalizado a "Franklin Gothic ATF".
+  const familyName = opts.fontName
+    .split("-")[0]
+    .replace(/([A-Z])/g, " $1")
+    .trim();
+
   const fontFormatHint = opts.fontBuffer.subarray(0, 4).toString("hex") === "774f4646" ? "woff" : "ttf";
   const tmpFontPath = path.join(os.tmpdir(), `adstudio_font_${randomUUID()}.${fontFormatHint}`);
   fs.writeFileSync(tmpFontPath, opts.fontBuffer);
 
+  console.log("Registering font:", {
+    family: familyName,
+    path: tmpFontPath,
+    exists: fs.existsSync(tmpFontPath),
+    size: fs.statSync(tmpFontPath).size,
+  });
+
   try {
     // registerFont no soporta reemplazar una familia ya registrada — cada
     // fuente custom se registra una única vez por proceso (worker de
-    // Trigger.dev), identificada por su nombre.
-    if (!registeredFontFamilies.has(opts.fontName)) {
-      registerFont(tmpFontPath, { family: opts.fontName });
-      registeredFontFamilies.add(opts.fontName);
+    // Trigger.dev), identificada por su family name normalizado.
+    if (!registeredFontFamilies.has(familyName)) {
+      registerFont(tmpFontPath, { family: familyName });
+      registeredFontFamilies.add(familyName);
     }
   } catch {
     // Si el registro falla (formato no soportado, ya registrada, etc.),
     // continúa: canvas cae a la fuente por defecto en vez de reventar el render.
-  } finally {
-    try {
-      fs.unlinkSync(tmpFontPath);
-    } catch {
-      // Best-effort: el archivo temporal ya no hace falta una vez registrada la fuente.
-    }
   }
 
-  // 4. Crear canvas y renderizar texto.
+  // 4. Crear canvas y renderizar texto. El archivo temporal se borra DESPUÉS
+  // de toBuffer(): node-canvas resuelve la fuente registrada de forma lazy al
+  // renderizar el texto, no en el momento de registerFont() — borrarlo antes
+  // dejaba la fuente sin datos que leer y el texto salía en blanco.
   const canvas = createCanvas(areaWidth, areaHeight);
   const ctx = canvas.getContext("2d");
 
@@ -108,20 +120,37 @@ export async function renderTextAsPng(opts: TextRenderOptions): Promise<Buffer> 
   ctx.textBaseline = "top";
 
   let finalFontSize = fontSize;
-  ctx.font = `bold ${finalFontSize}px "${opts.fontName}"`;
+  ctx.font = `bold ${finalFontSize}px "${familyName}"`;
   let lines = wrapText(ctx, opts.text, areaWidth);
 
   // Si el texto no cabe con el fontSize calculado, reducir hasta que quepa.
   while (lines.length * (finalFontSize * 1.2) > areaHeight && finalFontSize > 8) {
     finalFontSize -= 2;
-    ctx.font = `bold ${finalFontSize}px "${opts.fontName}"`;
+    ctx.font = `bold ${finalFontSize}px "${familyName}"`;
     lines = wrapText(ctx, opts.text, areaWidth);
   }
+
+  console.log("Rendering text:", {
+    text: opts.text.substring(0, 30),
+    font: ctx.font,
+    areaWidth,
+    areaHeight,
+    fontSize: finalFontSize,
+  });
 
   const lineHeight = finalFontSize * 1.2;
   lines.forEach((line, i) => {
     ctx.fillText(line, 0, i * lineHeight);
   });
 
-  return canvas.toBuffer("image/png");
+  const buffer = canvas.toBuffer("image/png");
+
+  // Limpiar DESPUÉS de toBuffer().
+  try {
+    fs.unlinkSync(tmpFontPath);
+  } catch {
+    // Best-effort: el archivo temporal ya no hace falta una vez rasterizado el PNG.
+  }
+
+  return buffer;
 }
