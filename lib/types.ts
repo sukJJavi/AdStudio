@@ -99,6 +99,8 @@ export type TextLayerMetadata = {
   fontSize?: number | null;
   content?: string | null;
   filename?: string | null;
+  /** Color de relleno del texto extraído del PSD (rgb(...) o #FFFFFF si no se pudo resolver), ver trigger/analyze-psd.ts. */
+  textColor?: string | null;
 };
 
 /** { x, y, width, height } en píxeles relativos al canvas — ver adstudio_assets.layer_bounds. */

@@ -27,6 +27,7 @@ REGLAS DE PRODUCCIÓN:
 - Compatible con Google Display Network, Xandr, The Trade Desk
 - Los PNG con canal alpha (logos, textos, elementos decorativos) NUNCA llevan background-color ni background en su CSS. Solo las capas clasificadas como 'fondo' o 'background' pueden tener color de fondo.
 - Las capas de background que son más anchas que el canvas (como imágenes panorámicas de 1250px en un canvas de 300px) deben tener overflow:visible en el #ad y la animación de desplazamiento debe modificar la propiedad left/transform. El #ad debe tener overflow:hidden para contener todo.
+- IMPORTANTE: todos los src de assets deben usar rutas relativas simples (src="background.jpg", src="logo.png"). NO uses rutas absolutas, NO uses file://, NO uses ./ Solo el nombre del archivo sin ningún prefijo de ruta.
 
 Ejemplo de background panorámico que se desplaza:
 #ad { overflow: hidden; }
@@ -112,6 +113,21 @@ function sanitizeHtml(html: string): string {
 }
 
 /**
+ * El HTML se sirve tanto desde `/api/preview/...` como, tras descomprimir el
+ * ZIP de entrega, abierto directamente como `file://` en local — ahí el
+ * navegador bloquea ("Unsafe attempt to load URL file://...") cualquier
+ * `src` que no sea un nombre de fichero suelto. El prompt ya pide rutas
+ * relativas simples, pero un LLM no lo garantiza: esto limpia cualquier
+ * prefijo de ruta (absoluta, `file://`, `./`, `../`) que se haya colado,
+ * dejando solo el nombre del archivo.
+ */
+function sanitizeAssetPaths(html: string): string {
+  return html
+    .replace(/src="[^"]*\/([^"/]+\.(png|jpg|jpeg|gif))"/gi, 'src="$1"')
+    .replace(/src='[^']*\/([^'/]+\.(png|jpg|jpeg|gif))'/gi, "src='$1'");
+}
+
+/**
  * Genera el HTML5 de producción de un banner llamando a Claude UNA VEZ por
  * proyecto (el master, ver trigger/render-master.ts). Las adaptaciones a otros
  * formatos parten de este HTML pero hacen su propia llamada a Claude Vision —
@@ -154,7 +170,7 @@ export async function generateHtml5Master(
   const textBlock = response.content.find((block) => block.type === "text");
   const raw = textBlock && textBlock.type === "text" ? textBlock.text : "";
 
-  const html = ensureAdBorder(sanitizeHtml(stripCodeFence(raw)));
+  const html = sanitizeAssetPaths(ensureAdBorder(sanitizeHtml(stripCodeFence(raw))));
 
   return { html, assetFilenames: descriptors.map((d) => d.filename) };
 }
@@ -215,6 +231,7 @@ export async function adaptHtml5WithVision(
     "Respeta las zonas seguras IAB (10px mínimo), mantén el mismo clickTag que el master, y el #ad con border: 1px solid #000 y exactamente " +
       `${targetFormat.width}x${targetFormat.height}px.`,
     "NUNCA uses reglas CSS globales como '#ad img{width:100%}'.",
+    "IMPORTANTE: todos los src de assets deben usar rutas relativas simples (src=\"background.jpg\", src=\"logo.png\"). NO uses rutas absolutas, NO uses file://, NO uses ./ Solo el nombre del archivo sin ningún prefijo de ruta.",
     "Devuelve SOLO el HTML completo comenzando con <!doctype html>",
   ].join("\n");
 
@@ -241,5 +258,5 @@ export async function adaptHtml5WithVision(
   const textBlock = response.content.find((block) => block.type === "text");
   const raw = textBlock && textBlock.type === "text" ? textBlock.text : "";
 
-  return ensureAdBorder(sanitizeHtml(stripCodeFence(raw)));
+  return sanitizeAssetPaths(ensureAdBorder(sanitizeHtml(stripCodeFence(raw))));
 }

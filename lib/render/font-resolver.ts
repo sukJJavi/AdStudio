@@ -1,6 +1,27 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 type FontAssetMetadata = { fontName?: string };
+type FontAsset = { file_path: string | null; metadata: FontAssetMetadata | null };
+
+/**
+ * Palabras clave de peso/estilo del fontName pedido — p. ej.
+ * 'FranklinGothicATF-BoldItalic' -> ['bold', 'italic']. Sin ninguna palabra
+ * clave reconocida se asume 'regular', para no hacer match con un weight
+ * distinto (p. ej. no confundir el Regular pedido con el Bold subido).
+ */
+function extractWeightKeywords(fontName: string): string[] {
+  const lower = fontName.toLowerCase();
+  const keywords: string[] = [];
+  if (lower.includes("bold")) keywords.push("bold");
+  if (lower.includes("italic") || lower.includes("oblique")) keywords.push("italic");
+  if (lower.includes("light")) keywords.push("light");
+  if (lower.includes("regular") || keywords.length === 0) keywords.push("regular");
+  return keywords;
+}
+
+function familyKeywordOf(fontName: string): string {
+  return fontName.toLowerCase().split("-")[0]?.trim() ?? "";
+}
 
 /**
  * Resuelve qué tipografía custom del cliente usar para renderizar un texto
@@ -9,13 +30,13 @@ type FontAssetMetadata = { fontName?: string };
  * la que mejor coincide con `fontName` (el detectado en el PSD, metadata.fontName
  * de la capa de texto) y descarga su archivo desde Storage.
  *
- * La coincidencia es deliberadamente laxa (substring en cualquier dirección,
- * comparando solo la primera palabra antes de un guion — p. ej. "Montserrat-Bold"
- * -> "montserrat") porque el nombre de fuente que expone ag-psd rara vez es
- * idéntico al nombre de archivo que sube el cliente. Si no hay ninguna
- * coincidencia pero SÍ hay fuentes subidas, cae a la primera como mejor
- * esfuerzo — un proyecto con una sola fuente propia normalmente la quiere
- * para todos los textos.
+ * La coincidencia va en dos pasadas para no confundir pesos/estilos cuando el
+ * cliente sube varias variantes de la misma familia (Regular/Bold/Italic):
+ * 1. familia Y weight/estilo (extractWeightKeywords) coinciden.
+ * 2. si no hay ninguna, cae a coincidencia solo por familia.
+ * 3. si tampoco, cae a la primera fuente subida como mejor esfuerzo — un
+ *    proyecto con una sola fuente propia normalmente la quiere para todos
+ *    los textos.
  */
 export async function resolveProjectFont(
   projectId: string,
@@ -29,18 +50,24 @@ export async function resolveProjectFont(
     .eq("layer_type", "font");
 
   if (!fonts || fonts.length === 0) return null;
+  const typedFonts = fonts as FontAsset[];
 
-  const requestedName = fontName.toLowerCase();
-  const requestedKeyword = requestedName.split("-")[0]?.trim();
+  const familyKeyword = familyKeywordOf(fontName);
+  const requestedKeywords = extractWeightKeywords(fontName);
 
   const match =
-    fonts.find((f) => {
-      const uploadedName = ((f.metadata as FontAssetMetadata | null)?.fontName ?? "").toLowerCase();
+    typedFonts.find((f) => {
+      const uploadedName = (f.metadata?.fontName ?? "").toLowerCase();
       if (!uploadedName) return false;
-      return (
-        (requestedKeyword && uploadedName.includes(requestedKeyword)) || requestedName.includes(uploadedName)
-      );
-    }) ?? fonts[0];
+      const familyMatch = familyKeyword ? uploadedName.includes(familyKeyword) : false;
+      const weightMatch = requestedKeywords.every((kw) => uploadedName.includes(kw));
+      return familyMatch && weightMatch;
+    }) ??
+    typedFonts.find((f) => {
+      const uploadedName = (f.metadata?.fontName ?? "").toLowerCase();
+      return !!uploadedName && !!familyKeyword && uploadedName.includes(familyKeyword);
+    }) ??
+    typedFonts[0];
 
   if (!match.file_path) return null;
 

@@ -1,7 +1,7 @@
 import { task, metadata } from "@trigger.dev/sdk/v3";
 import { createCanvas, createImageData } from "canvas";
 import { readPsd, initializeCanvas } from "ag-psd";
-import type { Layer } from "ag-psd";
+import type { Layer, TextStyle } from "ag-psd";
 import sharp from "sharp";
 import { createTriggerSupabaseClient } from "@/lib/supabase/trigger-client";
 import { classifyLayerImage } from "@/lib/claude/vision";
@@ -69,7 +69,51 @@ function flattenLayers(layers: Layer[], inherited: FrameContext, out: FlattenedL
   }
 }
 
-type TextLayerMetadata = { fontName: string | null; fontSize: number | null; content: string | null };
+type TextLayerMetadata = {
+  fontName: string | null;
+  fontSize: number | null;
+  content: string | null;
+  textColor: string;
+};
+
+/**
+ * ag-psd tipa `fontCaps` como `number` (enum interno de Photoshop) pero
+ * PSDs con motores de texto antiguos pueden traer el descriptor sin
+ * normalizar como string ('allCaps') — de ahí el cast a `unknown` y la
+ * comprobación defensiva contra ambas formas, más un `allCaps` booleano
+ * que tampoco está en el tipo de ag-psd pero sí puede aparecer en el
+ * descriptor crudo de algunos PSDs.
+ */
+function isAllCaps(style: TextStyle | undefined): boolean {
+  const fontCaps = (style as { fontCaps?: unknown } | undefined)?.fontCaps;
+  const allCapsFlag = (style as { allCaps?: unknown } | undefined)?.allCaps;
+  return fontCaps === "allCaps" || fontCaps === 2 || allCapsFlag === true;
+}
+
+/** Aplica el estilo "All Caps" de Photoshop al texto extraído, si la capa lo tiene activado. */
+function resolveTextContent(layer: Layer): string {
+  const rawText = layer.text?.text ?? "";
+  return isAllCaps(layer.text?.style) ? rawText.toUpperCase() : rawText;
+}
+
+/**
+ * `fillColor` es una unión de espacios de color (RGB/RGBA/FRGB/HSB/CMYK/LAB/
+ * Grayscale) — solo se resuelve a CSS cuando trae r/g/b (el caso normal para
+ * texto en PSDs RGB); el resto de espacios cae al blanco por defecto.
+ */
+function fillColorToCss(fillColor: unknown): string {
+  if (
+    fillColor &&
+    typeof fillColor === "object" &&
+    "r" in fillColor &&
+    "g" in fillColor &&
+    "b" in fillColor
+  ) {
+    const { r, g, b } = fillColor as { r: number; g: number; b: number };
+    return `rgb(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)})`;
+  }
+  return "#FFFFFF";
+}
 
 /**
  * ag-psd expone el nombre de la fuente en `layer.text.style.font.name`
@@ -80,7 +124,8 @@ function extractTextMetadata(layer: Layer): TextLayerMetadata | null {
   return {
     fontName: layer.text.style?.font?.name ?? null,
     fontSize: layer.text.style?.fontSize ?? null,
-    content: layer.text.text ?? null,
+    content: resolveTextContent(layer),
+    textColor: fillColorToCss(layer.text.style?.fillColor),
   };
 }
 
@@ -306,7 +351,7 @@ export const analyzePsd = task({
             blend_mode: layer.blendMode ?? null,
             opacity: (layer.opacity ?? 255) / 255,
             layer_bounds: layerBounds,
-            text_content: layer.text?.text ?? null,
+            text_content: layer.text ? resolveTextContent(layer) : null,
           })
           .select()
           .single();

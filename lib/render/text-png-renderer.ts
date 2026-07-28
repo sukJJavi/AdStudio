@@ -21,8 +21,8 @@ export interface TextRenderOptions {
   targetHeight: number;
   /** Posición de la capa en el master (adstudio_assets.layer_bounds). */
   sourceLayerBounds: { x: number; y: number; width: number; height: number };
-  /** Color del texto (default: blanco). */
-  color?: string;
+  /** Color del texto extraído del PSD (rgb(...) o hex), default blanco. */
+  textColor?: string;
 }
 
 const registeredFontFamilies = new Set<string>();
@@ -116,7 +116,7 @@ export async function renderTextAsPng(opts: TextRenderOptions): Promise<Buffer> 
   const ctx = canvas.getContext("2d");
 
   ctx.clearRect(0, 0, areaWidth, areaHeight);
-  ctx.fillStyle = opts.color ?? "#FFFFFF";
+  ctx.fillStyle = opts.textColor ?? "#FFFFFF";
   ctx.textBaseline = "top";
 
   let finalFontSize = fontSize;

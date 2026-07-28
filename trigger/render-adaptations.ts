@@ -244,6 +244,7 @@ export const renderAdaptations = task({
               targetWidth: spec.ancho,
               targetHeight: spec.alto,
               sourceLayerBounds: asset.layer_bounds,
+              textColor: meta?.textColor ?? undefined,
             });
 
             formatAssetBuffers.set(exportFilenameFor(pngFilename, !!asset.export_as_jpg), textPng);
@@ -253,6 +254,11 @@ export const renderAdaptations = task({
             console.error(`No se pudo renderizar texto custom para "${asset.layer_name}":`, textError);
           }
         }
+
+        // Verificación: formatAssetBuffers debe incluir el fondo/imagen_principal
+        // ya reencuadrado con FLUX (sobreescrito arriba) — un filename ausente
+        // aquí es la causa típica de un ZIP sin imagen de fondo para ese formato.
+        console.log("Assets en ZIP para", format.iab_format, ":", Array.from(formatAssetBuffers.keys()));
 
         console.log(`Formato ${n}/${total}: generando HTML5...`);
         const adaptedHtml = await adaptHtml5WithVision(
