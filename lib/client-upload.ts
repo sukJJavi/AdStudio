@@ -52,22 +52,40 @@ export function uploadWithProgress(
   });
 }
 
+export type UploadAssetType = "psd" | "excel" | "animation" | "font";
+
 export type UploadAssetResult =
   | { ok: true; analysisTriggered: boolean }
   | { ok: false; error: string };
 
 /**
+ * Nombre de la carpeta en Storage por tipo — normalmente igual al `type`,
+ * salvo 'font' que sube a `fonts/` (plural) mientras que `layer_type` en BBDD
+ * se guarda en singular ('font', ver app/api/upload/route.ts).
+ */
+const STORAGE_FOLDER: Record<UploadAssetType, string> = {
+  psd: "psd",
+  excel: "excel",
+  animation: "animation",
+  font: "fonts",
+};
+
+/**
  * Sube el archivo directamente al bucket de Supabase Storage desde el
  * browser (evita el límite de ~4.5MB de las API routes de Vercel) y luego
  * registra el asset en BBDD vía POST JSON a /api/upload. Compartido entre
- * el upload de PSD/animación (components/project/upload-zones.tsx) y el
- * del Excel del plan de medios (components/project/brief-form.tsx).
+ * el upload de PSD/animación/tipografías (components/project/upload-zones.tsx)
+ * y el del Excel del plan de medios (components/project/brief-form.tsx).
+ *
+ * `metadata` solo se usa para tipografías (fontName/fileSize/format, ver
+ * app/api/upload/route.ts) — el resto de tipos no la necesitan.
  */
 export async function uploadAssetToStorage(
   projectId: string,
-  type: "psd" | "excel" | "animation",
+  type: UploadAssetType,
   file: File,
   onProgress: (percent: number) => void,
+  metadata?: Record<string, unknown>,
 ): Promise<UploadAssetResult> {
   const supabase = createBrowserSupabaseClient();
   const {
@@ -78,7 +96,7 @@ export async function uploadAssetToStorage(
     return { ok: false, error: "Sesión expirada. Recarga la página e inicia sesión de nuevo." };
   }
 
-  const filePath = `${projectId}/${type}/${Date.now()}-${sanitizeFilename(file.name)}`;
+  const filePath = `${projectId}/${STORAGE_FOLDER[type]}/${Date.now()}-${sanitizeFilename(file.name)}`;
 
   try {
     await uploadWithProgress(file, filePath, session.access_token, onProgress);
@@ -95,6 +113,7 @@ export async function uploadAssetToStorage(
       fileType: type,
       fileName: file.name,
       fileSize: file.size,
+      metadata,
     }),
   });
   const data = await res.json();

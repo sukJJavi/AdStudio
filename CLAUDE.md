@@ -93,6 +93,15 @@ Un proyecto puede tener varios PSDs subidos, cada uno tratado como una pieza ind
 
 La aprobación del cliente (`/approve/[token]`) y el chat de cambios de master siguen operando sobre `adstudio_projects.master_html`/`master_run_id` a nivel de proyecto, no por master individual — con varios masters, la vista de Master (`app/project/[id]/master`) los lista todos pero el flujo de aprobación/refinamiento por chat aplica al master primario.
 
+## Tipografías custom
+
+El cliente puede subir sus propias fuentes en Upload (Zona D, opcional — `.ttf`/`.otf`/`.woff`/`.woff2`, múltiples archivos para Regular/Bold/Italic, máx 5MB cada uno):
+
+1. **Subida** (`components/project/upload-zones.tsx`) — mismo patrón de subida directa a Storage que PSD/animación (`{project_id}/fonts/{filename}`), registrado en `adstudio_assets` con `layer_type: 'font'` y `metadata: { fontName, fileSize, format }` (`fontName` = nombre de archivo sin extensión).
+2. **`lib/render/font-resolver.ts`** — `resolveProjectFont(projectId, fontName, supabase)` busca entre las fuentes subidas la que mejor coincide (por substring, sin distinguir mayúsculas) con el `fontName` detectado en la capa de texto del PSD, y descarga su archivo desde Storage. Sin coincidencia exacta, cae a la primera fuente subida como mejor esfuerzo.
+3. **`lib/render/text-png-renderer.ts`** — `renderTextAsPng()` renderiza una capa de texto como PNG con node-canvas usando la fuente custom, escalando `fontSize` y el área disponible del master al formato destino (con ajuste automático de tamaño si el texto no cabe).
+4. **`trigger/render-adaptations.ts`** — por cada formato adaptado, si una capa `classification='texto'` con `text_content` tiene una fuente propia resuelta, su PNG en `formatAssetBuffers` (lo que ve Claude Vision y lo que se empaqueta en el ZIP de esa pieza) se sustituye por la versión renderizada con la tipografía real del cliente. El `fallback.jpg` sigue componiéndose con el PNG de texto del master (sin esta sustitución) — `renderFallbackFromFrame` usa los `layer_bounds` del master sin reescalar, así que no es compatible con un PNG redimensionado al formato destino. Sin fuente resuelta, comportamiento idéntico al actual (PNG del master reutilizado tal cual).
+
 ## Tiers y límites
 
 | Tier | Precio | Proyectos | Formatos | Rondas de cambios |

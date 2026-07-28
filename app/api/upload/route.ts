@@ -6,16 +6,25 @@ import { requireProjectOwnership } from "@/lib/authorization";
 
 export const runtime = "nodejs";
 
-type AssetKind = "psd" | "excel" | "animation";
+type AssetKind = "psd" | "excel" | "animation" | "font";
 
 const LIMITS: Record<AssetKind, { extensions: string[]; maxBytes: number }> = {
   psd: { extensions: [".psd"], maxBytes: 100 * 1024 * 1024 },
   excel: { extensions: [".xlsx", ".xls"], maxBytes: 10 * 1024 * 1024 },
   animation: { extensions: [".pdf", ".txt"], maxBytes: 20 * 1024 * 1024 },
+  font: { extensions: [".ttf", ".otf", ".woff", ".woff2"], maxBytes: 5 * 1024 * 1024 },
+};
+
+/** Carpeta en Storage por tipo — 'font' sube a `fonts/` (plural), ver lib/client-upload.ts. */
+const STORAGE_FOLDER: Record<AssetKind, string> = {
+  psd: "psd",
+  excel: "excel",
+  animation: "animation",
+  font: "fonts",
 };
 
 function isAssetKind(value: unknown): value is AssetKind {
-  return value === "psd" || value === "excel" || value === "animation";
+  return value === "psd" || value === "excel" || value === "animation" || value === "font";
 }
 
 function extensionOf(filename: string): string {
@@ -42,6 +51,7 @@ async function registerAssetAndMaybeTriggerAnalysis(
   type: AssetKind,
   fileName: string,
   storagePath: string,
+  metadata?: Record<string, unknown>,
 ): Promise<RegisterResult> {
   const supabase = createServerSupabaseClient();
 
@@ -58,6 +68,7 @@ async function registerAssetAndMaybeTriggerAnalysis(
       file_path: storagePath,
       quality_score: null,
       status: "uploaded",
+      metadata: metadata ?? {},
     })
     .select()
     .single();
@@ -134,12 +145,13 @@ async function handleJsonRegister(req: NextRequest) {
   const fileType = body?.fileType;
   const fileName = body?.fileName;
   const fileSize = body?.fileSize;
+  const metadata = body?.metadata;
 
   if (typeof projectId !== "string" || !projectId) {
     return NextResponse.json({ error: "projectId es obligatorio" }, { status: 400 });
   }
   if (!isAssetKind(fileType)) {
-    return NextResponse.json({ error: "fileType debe ser psd, excel o animation" }, { status: 400 });
+    return NextResponse.json({ error: "fileType debe ser psd, excel, animation o font" }, { status: 400 });
   }
   if (typeof filePath !== "string" || !filePath) {
     return NextResponse.json({ error: "filePath es obligatorio" }, { status: 400 });
@@ -150,6 +162,9 @@ async function handleJsonRegister(req: NextRequest) {
   if (typeof fileSize !== "number" || fileSize <= 0) {
     return NextResponse.json({ error: "fileSize es obligatorio" }, { status: 400 });
   }
+  if (metadata !== undefined && (typeof metadata !== "object" || metadata === null || Array.isArray(metadata))) {
+    return NextResponse.json({ error: "metadata debe ser un objeto" }, { status: 400 });
+  }
 
   const auth = await requireProjectOwnership(projectId);
   if (!auth.ok) {
@@ -158,7 +173,7 @@ async function handleJsonRegister(req: NextRequest) {
 
   // filePath lo construye el cliente antes de subir; se valida que apunte a la
   // carpeta del proyecto/tipo indicados para no registrar una ruta ajena.
-  if (!filePath.startsWith(`${projectId}/${fileType}/`)) {
+  if (!filePath.startsWith(`${projectId}/${STORAGE_FOLDER[fileType]}/`)) {
     return NextResponse.json(
       { error: "filePath no corresponde al proyecto o tipo indicado." },
       { status: 400 },
@@ -181,7 +196,13 @@ async function handleJsonRegister(req: NextRequest) {
     );
   }
 
-  const result = await registerAssetAndMaybeTriggerAnalysis(projectId, fileType, fileName, filePath);
+  const result = await registerAssetAndMaybeTriggerAnalysis(
+    projectId,
+    fileType,
+    fileName,
+    filePath,
+    metadata as Record<string, unknown> | undefined,
+  );
   if (!result.ok) {
     return NextResponse.json({ error: result.error }, { status: 500 });
   }
@@ -209,7 +230,7 @@ async function handleMultipartUpload(req: NextRequest) {
     return NextResponse.json({ error: "projectId es obligatorio" }, { status: 400 });
   }
   if (!isAssetKind(typeRaw)) {
-    return NextResponse.json({ error: "type debe ser psd, excel o animation" }, { status: 400 });
+    return NextResponse.json({ error: "type debe ser psd, excel, animation o font" }, { status: 400 });
   }
   const type = typeRaw;
 
@@ -249,7 +270,7 @@ async function handleMultipartUpload(req: NextRequest) {
     );
   }
 
-  const storagePath = `${projectId}/${type}/${Date.now()}-${sanitizeFilename(uploadFile.name)}`;
+  const storagePath = `${projectId}/${STORAGE_FOLDER[type]}/${Date.now()}-${sanitizeFilename(uploadFile.name)}`;
 
   const { error: uploadError } = await supabase.storage
     .from("adstudio-projects")

@@ -83,7 +83,7 @@ export type ProjectFormat = {
   created_at: string;
 };
 
-export type AssetType = "psd" | "excel" | "animation";
+export type AssetType = "psd" | "excel" | "animation" | "font";
 
 export type AssetStatus = "uploaded" | "processing" | "processed" | "error";
 

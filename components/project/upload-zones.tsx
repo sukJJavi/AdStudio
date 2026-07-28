@@ -42,6 +42,17 @@ async function uploadAnimationText(
   return { ok: true };
 }
 
+const FONT_EXTENSIONS = [".ttf", ".otf", ".woff", ".woff2"];
+const FONT_MAX_BYTES = 5 * 1024 * 1024;
+
+/** Nombre sin extensión y formato detectado, para adstudio_assets.metadata (ver lib/render/font-resolver.ts). */
+function fontMetadataFor(file: File): { fontName: string; fileSize: number; format: string } {
+  const dot = file.name.lastIndexOf(".");
+  const fontName = dot === -1 ? file.name : file.name.slice(0, dot);
+  const format = dot === -1 ? "" : file.name.slice(dot + 1).toLowerCase();
+  return { fontName, fileSize: file.size, format };
+}
+
 async function tryGeneratePsdThumbnail(file: File): Promise<string | null> {
   try {
     const { readPsd } = await import("ag-psd");
@@ -97,9 +108,11 @@ export function UploadZones({
   const psdAssets = initialAssets.filter((a) => a.layer_type === "psd");
   const excelAssets = initialAssets.filter((a) => a.layer_type === "excel");
   const animationAssets = initialAssets.filter((a) => a.layer_type === "animation");
+  const fontAssets = initialAssets.filter((a) => a.layer_type === "font");
 
   const [pendingPsd, setPendingPsd] = useState<PendingFile[]>([]);
   const [pendingAnimation, setPendingAnimation] = useState<PendingFile[]>([]);
+  const [pendingFonts, setPendingFonts] = useState<PendingFile[]>([]);
 
   const [psdThumbnails, setPsdThumbnails] = useState<Record<string, string>>({});
 
@@ -234,6 +247,59 @@ export function UploadZones({
       setPendingAnimation((prev) =>
         prev.map((p) => (p.name === file.name ? { ...p, status: "error", error: result.error } : p)),
       );
+    }
+  }
+
+  async function handleFontFiles(files: File[]) {
+    for (const file of files) {
+      const ext = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
+      if (!FONT_EXTENSIONS.includes(ext)) {
+        setPendingFonts((prev) => [
+          ...prev,
+          {
+            name: file.name,
+            size: file.size,
+            status: "error",
+            progress: 0,
+            error: "Solo se aceptan .ttf, .otf, .woff o .woff2",
+          },
+        ]);
+        continue;
+      }
+      if (file.size > FONT_MAX_BYTES) {
+        setPendingFonts((prev) => [
+          ...prev,
+          { name: file.name, size: file.size, status: "error", progress: 0, error: "Supera el máximo de 5MB" },
+        ]);
+        continue;
+      }
+
+      setPendingFonts((prev) => [...prev, { name: file.name, size: file.size, status: "uploading", progress: 0 }]);
+
+      const result = await uploadAssetToStorage(
+        projectId,
+        "font",
+        file,
+        (percent) => {
+          setPendingFonts((prev) =>
+            prev.map((p) =>
+              p.name === file.name
+                ? { ...p, progress: percent, status: percent >= 100 ? "registering" : "uploading" }
+                : p,
+            ),
+          );
+        },
+        fontMetadataFor(file),
+      );
+
+      if (result.ok) {
+        setPendingFonts((prev) => prev.filter((p) => p.name !== file.name));
+        router.refresh();
+      } else {
+        setPendingFonts((prev) =>
+          prev.map((p) => (p.name === file.name ? { ...p, status: "error", error: result.error } : p)),
+        );
+      }
     }
   }
 
@@ -404,6 +470,60 @@ export function UploadZones({
             ))}
             {pendingAnimation.map((p) => (
               <PendingFileRow key={p.name} file={p} icon="DOC" />
+            ))}
+          </ul>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Zona D — Tipografías del cliente</CardTitle>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <p className="text-xs text-muted-foreground">
+            Tipografías custom (opcional) — necesarias para adaptar textos correctamente.
+          </p>
+          <DropArea
+            label="Arrastra los archivos de fuente (Regular, Bold, Italic...)"
+            hint=".ttf, .otf, .woff o .woff2 · máximo 5MB cada uno"
+            onFiles={handleFontFiles}
+          />
+          <ul className="flex flex-col gap-2">
+            {fontAssets.map((asset) => {
+              const meta = asset.metadata as { fontName?: string; fileSize?: number; format?: string } | undefined;
+              return (
+                <li
+                  key={asset.id}
+                  className={`flex items-center gap-3 rounded-md border border-border p-2 text-sm transition-all duration-200 ${
+                    removingIds.has(asset.id) ? "-translate-x-2 opacity-0" : "opacity-100"
+                  }`}
+                >
+                  <span className="flex h-10 w-10 items-center justify-center rounded bg-muted text-xs">
+                    {(meta?.format ?? "").toUpperCase() || "FNT"}
+                  </span>
+                  <span className="flex-1 truncate">{meta?.fontName ?? asset.layer_name}</span>
+                  {meta?.fileSize != null && (
+                    <span className="text-xs text-muted-foreground">{formatBytes(meta.fileSize)}</span>
+                  )}
+                  {deleteErrors[asset.id] ? (
+                    <span className="text-xs text-red-600">{deleteErrors[asset.id]}</span>
+                  ) : (
+                    <span className="text-xs text-green-600">subido</span>
+                  )}
+                  <button
+                    type="button"
+                    aria-label="Eliminar archivo"
+                    disabled={removingIds.has(asset.id)}
+                    onClick={() => handleDelete(asset.id)}
+                    className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-red-600 disabled:opacity-50"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </li>
+              );
+            })}
+            {pendingFonts.map((p) => (
+              <PendingFileRow key={p.name} file={p} icon="FNT" />
             ))}
           </ul>
         </CardContent>

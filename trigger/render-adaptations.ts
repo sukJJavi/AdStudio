@@ -10,6 +10,8 @@ import { renderHtmlToImage } from "@/lib/render/browserless-renderer";
 import { adaptImageAsset } from "@/lib/render/replicate-outpainting";
 import { renderFallbackFromFrame } from "@/lib/render/fallback-composite";
 import { exportBufferFor, exportFilenameFor } from "@/lib/render/export-format";
+import { resolveProjectFont } from "@/lib/render/font-resolver";
+import { renderTextAsPng } from "@/lib/render/text-png-renderer";
 import {
   buildManifestJson,
   buildZipBuffer,
@@ -64,7 +66,7 @@ export const renderAdaptations = task({
     const [{ data: allFormats }, { data: assets }, { data: project }] = await Promise.all([
       supabase.from("adstudio_formats").select("*").eq("project_id", payload.projectId),
       supabase.from("adstudio_assets").select("*").eq("project_id", payload.projectId),
-      supabase.from("adstudio_projects").select("cliente, producto").eq("id", payload.projectId).single(),
+      supabase.from("adstudio_projects").select("cliente, producto, psd_height").eq("id", payload.projectId).single(),
     ]);
 
     if (!project) {
@@ -209,6 +211,47 @@ export const renderAdaptations = task({
 
           formatAssetBuffers.set(exportFilenameFor(pngFilename, !!asset.export_as_jpg), adaptedExported);
           fallbackOverrides.set(asset.id, adaptedPng);
+        }
+
+        // Tipografías custom del cliente (adstudio_assets.layer_type='font',
+        // ver components/project/upload-zones.tsx): si hay una fuente propia
+        // resuelta para esta capa de texto, se re-renderiza su PNG escalado
+        // al formato destino en vez de reutilizar el PNG del master tal cual.
+        // Solo sustituye formatAssetBuffers (lo que ve Claude Vision y lo que
+        // se empaqueta en el ZIP de esta pieza) — el fallback.jpg sigue
+        // componiéndose con el PNG original del master (renderFallbackFromFrame
+        // usa los layer_bounds del master tal cual, sin reescalar).
+        const textAssets = allAssets.filter(
+          (a) => !a.discarded && a.classification === "texto" && (a.text_content ?? "").trim(),
+        );
+
+        for (const asset of textAssets) {
+          const pngFilename = assetFilename(asset);
+          const meta = asset.metadata as TextLayerMetadata | undefined;
+          const fontName = meta?.fontName;
+          if (!pngFilename || !fontName || !asset.layer_bounds) continue;
+
+          try {
+            const fontBuffer = await resolveProjectFont(payload.projectId, fontName, supabase);
+            if (!fontBuffer) continue;
+
+            const textPng = await renderTextAsPng({
+              text: asset.text_content ?? "",
+              fontBuffer,
+              fontName,
+              sourceFontSize: meta?.fontSize ?? 100,
+              sourcePsdHeight: project.psd_height ?? masterEntry.spec.alto,
+              targetWidth: spec.ancho,
+              targetHeight: spec.alto,
+              sourceLayerBounds: asset.layer_bounds,
+            });
+
+            formatAssetBuffers.set(exportFilenameFor(pngFilename, !!asset.export_as_jpg), textPng);
+          } catch (textError) {
+            // Un fallo renderizando una capa de texto no debe tirar abajo el
+            // formato completo — se mantiene el PNG del master para esa capa.
+            console.error(`No se pudo renderizar texto custom para "${asset.layer_name}":`, textError);
+          }
         }
 
         console.log(`Formato ${n}/${total}: generando HTML5...`);

@@ -33,7 +33,11 @@ export async function getProjectLayers(projectId: string): Promise<ProjectLayer[
 
   // Fix 1: excluye el Excel de adaptaciones y la guía de animación en texto —
   // solo se muestran assets extraídos del PSD (imagen/texto/grupo con su PNG/JPG).
-  const assets = (data as ProjectAsset[]).filter((asset) => !isNonPsdFile(asset.file_path));
+  // Las tipografías custom del cliente (layer_type='font', ver
+  // components/project/upload-zones.tsx) tampoco son capas del PSD.
+  const assets = (data as ProjectAsset[]).filter(
+    (asset) => !isNonPsdFile(asset.file_path) && asset.layer_type !== "font",
+  );
 
   return assets.map((asset) => {
     const filename = (asset.metadata as TextLayerMetadata | undefined)?.filename;
