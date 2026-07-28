@@ -1,9 +1,41 @@
 import Replicate from "replicate";
+import sharp from "sharp";
 import { createClaudeClient } from "../claude/client";
 
 const replicate = new Replicate({
   auth: process.env.REPLICATE_API_KEY!,
 });
+
+const KONTEXT_ASPECT_RATIOS = [
+  { ratio: "21:9", w: 21, h: 9 },
+  { ratio: "16:9", w: 16, h: 9 },
+  { ratio: "4:3", w: 4, h: 3 },
+  { ratio: "3:2", w: 3, h: 2 },
+  { ratio: "1:1", w: 1, h: 1 },
+  { ratio: "2:3", w: 2, h: 3 },
+  { ratio: "3:4", w: 3, h: 4 },
+  { ratio: "9:16", w: 9, h: 16 },
+  { ratio: "9:21", w: 9, h: 21 },
+];
+
+/**
+ * flux-kontext-pro solo acepta aspect ratios predefinidos; los formatos IAB
+ * casi nunca encajan exactos, así que se busca el más cercano y luego se
+ * recorta al tamaño exacto con Sharp tras la generación.
+ */
+function closestAspectRatio(targetW: number, targetH: number): string {
+  const targetRatio = targetW / targetH;
+  let closest = KONTEXT_ASPECT_RATIOS[0];
+  let minDiff = Infinity;
+  for (const ar of KONTEXT_ASPECT_RATIOS) {
+    const diff = Math.abs(ar.w / ar.h - targetRatio);
+    if (diff < minDiff) {
+      minDiff = diff;
+      closest = ar;
+    }
+  }
+  return closest.ratio;
+}
 
 async function uploadImageToReplicate(buffer: Buffer, mimeType: string, filename: string = "image.png"): Promise<string> {
   try {
@@ -84,8 +116,10 @@ export async function adaptImageAsset(
   // 2. Sube imagen a Replicate.
   const imageUrl = await uploadImageToReplicate(imageBuffer, "image/png", "asset.png");
 
-  // 3. FLUX Kontext adapta la imagen al nuevo formato.
+  // 3. FLUX Kontext adapta la imagen al ratio predefinido más cercano.
   try {
+    const aspectRatio = closestAspectRatio(targetWidth, targetHeight);
+
     const output = await replicate.run("black-forest-labs/flux-kontext-pro", {
       input: {
         input_image: imageUrl,
@@ -96,7 +130,7 @@ Keep the main subject clearly visible and well-framed.
 Leave negative space for text overlay on sides or bottom.
 Maintain original colors, lighting and atmosphere.
 No text generation. No watermarks.`,
-        aspect_ratio: `${targetWidth}:${targetHeight}`,
+        aspect_ratio: aspectRatio,
         output_format: "png",
         safety_tolerance: 6,
       },
@@ -107,7 +141,16 @@ No text generation. No watermarks.`,
     if (!imageResponse.ok) {
       throw new Error(`Download failed: ${imageResponse.status}`);
     }
-    return Buffer.from(await imageResponse.arrayBuffer());
+    const fluxBuffer = Buffer.from(await imageResponse.arrayBuffer());
+
+    // 4. Recorta/redimensiona al tamaño exacto del formato IAB.
+    return await sharp(fluxBuffer)
+      .resize(targetWidth, targetHeight, {
+        fit: "cover",
+        position: "centre",
+      })
+      .png()
+      .toBuffer();
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(`Replicate adaptImageAsset failed: ${message}`);

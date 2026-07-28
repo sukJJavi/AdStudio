@@ -40,6 +40,8 @@ type SoporteRow = {
   is_master: boolean;
   /** Medios/plataformas del plan que necesitan este tamaño (ver trigger/parse-media-plan.ts). */
   soportes: string[];
+  /** PSD propio de este formato (id de adstudio_assets con layer_type='psd') cuando el proyecto tiene varios PSDs. */
+  source_psd_id: string | null;
 };
 
 /** nombre_soporte pasa a ser siempre el tamaño (ver trigger/parse-media-plan.ts) — se deriva del iab_format, no se edita a mano. */
@@ -59,6 +61,7 @@ function formatToRow(f: ProjectFormat): SoporteRow {
     peso_max_kb: f.peso_max_kb != null ? String(f.peso_max_kb) : "",
     is_master: f.is_master,
     soportes: Array.isArray(f.soportes) ? f.soportes : [],
+    source_psd_id: f.source_psd_id ?? null,
   };
 }
 
@@ -100,6 +103,7 @@ function newRow(): SoporteRow {
     peso_max_kb: "",
     is_master: false,
     soportes: [],
+    source_psd_id: null,
   };
 }
 
@@ -144,10 +148,12 @@ export function BriefForm({
   project,
   formats,
   excelAsset,
+  psdAssets,
 }: {
   project: Project;
   formats: ProjectFormat[];
   excelAsset: ProjectAsset | null;
+  psdAssets: ProjectAsset[];
 }) {
   const router = useRouter();
   const [excludedFromMediaPlan, setExcludedFromMediaPlan] = useState<MediaPlanExcludedEntry[]>(
@@ -177,6 +183,43 @@ export function BriefForm({
   const [rows, setRows] = useState<SoporteRow[]>(
     withDefaultMaster(formats.length > 0 ? formats.map(formatToRow) : [newRow()]),
   );
+
+  // Con un único PSD subido, se asocia automáticamente al formato master —
+  // el usuario solo elige manualmente cuando hay varios PSDs (ver sección
+  // "Material por formato" más abajo).
+  useEffect(() => {
+    if (psdAssets.length !== 1) return;
+    const psdId = psdAssets[0].id;
+    setRows((prev) => {
+      if (prev.some((r) => r.source_psd_id === psdId)) return prev;
+      const masterKey = (prev.find((r) => r.is_master) ?? prev[0])?.key;
+      if (!masterKey) return prev;
+      return prev.map((r) => (r.key === masterKey ? { ...r, source_psd_id: psdId } : r));
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [psdAssets.length]);
+
+  async function assignPsdToFormat(psdId: string, targetKey: string) {
+    setRows((prev) =>
+      prev.map((r) => {
+        if (r.key === targetKey) return { ...r, source_psd_id: psdId };
+        // Un PSD solo puede estar asociado a un formato a la vez.
+        if (r.source_psd_id === psdId) return { ...r, source_psd_id: null };
+        return r;
+      }),
+    );
+
+    const targetRow = rows.find((r) => r.key === targetKey);
+    if (targetRow?.id) {
+      await fetch(`/api/brief/formats/${targetRow.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ source_psd_id: psdId }),
+      }).catch(() => {
+        // Best-effort: si falla, "Guardar brief" vuelve a mandar la asociación actual.
+      });
+    }
+  }
 
   const masterRow = rows.find((r) => r.is_master) ?? null;
   const masterDimensiones = masterRow ? resolveFormatDimensions(masterRow.iab_format) : null;
@@ -269,6 +312,7 @@ export function BriefForm({
         peso_max_kb: r.peso_max_kb.trim() ? Number(r.peso_max_kb) : null,
         is_master: r.is_master,
         soportes: r.soportes,
+        source_psd_id: r.source_psd_id,
       })),
     };
 
@@ -502,6 +546,47 @@ export function BriefForm({
           )}
         </CardContent>
       </Card>
+
+      {psdAssets.length > 1 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Material por formato</CardTitle>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-3">
+            <p className="text-xs text-muted-foreground">
+              Este proyecto tiene varios PSDs subidos. Asocia cada uno al formato del plan que produce — se
+              generará su propio HTML5 a partir de ese PSD, en vez de adaptarse desde el master.
+            </p>
+            {psdAssets.map((psd) => {
+              const assignedRow = rows.find((r) => r.source_psd_id === psd.id);
+              return (
+                <div key={psd.id} className="flex items-center gap-3 rounded-md border border-border p-2 text-sm">
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-muted text-[10px]">
+                    PSD
+                  </span>
+                  <span className="flex-1 truncate">{psd.layer_name}</span>
+                  <Select
+                    value={assignedRow?.key ?? ""}
+                    onValueChange={(value) => value && assignPsdToFormat(psd.id, value)}
+                  >
+                    <SelectTrigger className="w-64">
+                      <SelectValue placeholder="¿A qué formato corresponde?" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {rows.map((row) => (
+                        <SelectItem key={row.key} value={row.key}>
+                          {row.nombre_soporte || row.iab_format}
+                          {row.is_master ? " (master)" : ""}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              );
+            })}
+          </CardContent>
+        </Card>
+      )}
 
       <Card>
         <CardHeader>

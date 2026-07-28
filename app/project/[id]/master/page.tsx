@@ -39,6 +39,13 @@ export default async function MasterPage({
 
   const previewText = formats.find((f) => f.copy?.trim())?.copy?.split("\n")[0]?.trim() || "Tu claim aparecerá aquí";
 
+  // Bloque 11: con varios PSDs, cada formato con source_psd_id tiene su propio
+  // master — se usa para etiquetar cada variante en "Otras variantes" con el
+  // nombre del soporte real en vez de solo el iab_format técnico.
+  const formatLabelsByIabFormat = Object.fromEntries(
+    formats.map((f) => [f.iab_format, { nombreSoporte: f.nombre_soporte, ownPsd: !!f.source_psd_id }]),
+  );
+
   return (
     <div className="space-y-6">
       <FontSelector
@@ -66,6 +73,7 @@ export default async function MasterPage({
         hasUnblockedFormat={unblocked.length > 0}
         secondLargestFormat={secondLargest}
         initialChanges={masterChanges}
+        formatLabelsByIabFormat={formatLabelsByIabFormat}
       />
     </div>
   );

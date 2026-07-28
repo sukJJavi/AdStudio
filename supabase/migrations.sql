@@ -197,3 +197,27 @@ ALTER TABLE adstudio_formats
   ADD COLUMN IF NOT EXISTS soportes jsonb DEFAULT '[]';
 UPDATE adstudio_formats SET soportes = '[]' WHERE soportes IS NULL;
 ALTER TABLE adstudio_formats ALTER COLUMN soportes SET NOT NULL;
+
+-- =========================================================
+-- Bloque 11 — múltiples PSDs independientes por proyecto
+-- =========================================================
+
+-- Cada capa extraída de un PSD referencia el asset del propio PSD
+-- (adstudio_assets con layer_type = 'psd') del que proviene — ver
+-- trigger/analyze-psd.ts. Permite agrupar capas por PSD origen cuando el
+-- proyecto tiene varios PSDs, cada uno asociado a un formato distinto.
+ALTER TABLE adstudio_assets
+  ADD COLUMN IF NOT EXISTS source_psd_id uuid DEFAULT NULL;
+
+-- Formato del plan al que corresponde un PSD subido (app/api/brief/formats/[formatId],
+-- components/project/brief-form.tsx). Un formato con source_psd_id se produce
+-- directamente desde su propio PSD (trigger/render-master.ts) y ya NO se
+-- adapta desde el master con FLUX en trigger/render-adaptations.ts.
+ALTER TABLE adstudio_formats
+  ADD COLUMN IF NOT EXISTS source_psd_id uuid DEFAULT NULL;
+
+-- Master generado a partir de un PSD propio (en vez del PSD único del
+-- proyecto) — permite localizar en adstudio_masters el master de un formato
+-- concreto cuando el proyecto tiene varios masters (uno por PSD).
+ALTER TABLE adstudio_masters
+  ADD COLUMN IF NOT EXISTS format_id uuid DEFAULT NULL REFERENCES adstudio_formats(id) ON DELETE SET NULL;

@@ -78,6 +78,8 @@ export type ProjectFormat = {
   is_master: boolean;
   /** Medios/plataformas del plan que necesitan este tamaño (dedupe por tamaño en trigger/parse-media-plan.ts). */
   soportes: string[];
+  /** PSD propio de este formato (adstudio_assets.id con layer_type='psd') cuando el proyecto tiene varios PSDs independientes — ver app/api/brief/formats/[formatId]. */
+  source_psd_id: string | null;
   created_at: string;
 };
 
@@ -152,6 +154,8 @@ export type ProjectAsset = {
   /** Contenido editable de capas de texto (editor de capas). */
   text_content: string | null;
   layer_bounds: LayerBounds | null;
+  /** Asset del PSD (layer_type='psd') del que proviene esta capa — ver trigger/analyze-psd.ts. */
+  source_psd_id: string | null;
   created_at: string;
 };
 
@@ -192,6 +196,8 @@ export type MasterRecord = {
   height: number;
   jpg_size_bytes: number | null;
   is_primary: boolean;
+  /** Formato del que proviene este master cuando el proyecto tiene varios PSDs (uno por PSD) — ver trigger/render-master.ts. */
+  format_id: string | null;
   created_at: string;
 };
 

@@ -13,6 +13,7 @@ type BriefFormatInput = {
   peso_max_kb?: number | null;
   is_master?: boolean;
   soportes?: string[];
+  source_psd_id?: string | null;
 };
 
 type BriefPayload = {
@@ -126,6 +127,7 @@ export async function POST(req: NextRequest) {
         peso_max_kb: f.peso_max_kb ?? null,
         is_master: !!f.is_master,
         soportes: Array.isArray(f.soportes) ? f.soportes : [],
+        source_psd_id: f.source_psd_id ?? null,
         status: "pending",
       })),
     );
@@ -191,6 +193,7 @@ export async function PUT(req: NextRequest) {
         peso_max_kb: f.peso_max_kb ?? null,
         is_master: !!f.is_master,
         soportes: Array.isArray(f.soportes) ? f.soportes : [],
+        source_psd_id: f.source_psd_id ?? null,
         status: "pending",
       })),
     );

@@ -58,9 +58,9 @@ SaaS que automatiza la producción de piezas publicitarias digitales (banners IA
 ## Modelo de datos
 
 - **`adstudio_projects`** — `status` (fase actual), `tier`, `font_primary`, `master_html` (HTML5 cacheado), `media_plan_excluded`, `psd_width`/`psd_height`
-- **`adstudio_formats`** — por proyecto: `iab_format`, `nombre_soporte`, `status` (`pending`/`producing`/`ready`/`incident`), `incidencias[]`, `copy`, `peso_max_kb`, `is_master` (uno solo por proyecto), `soportes[]` (medios/plataformas que necesitan ese tamaño)
-- **`adstudio_assets`** — capas extraídas del PSD: `classification`, `frames[]` (autoritativo; `frame` deprecado), `persistent`, `discarded`, `hidden_in_psd`, `export_as_jpg`, `z_index`, `blend_mode`, `opacity`, `text_content`, `layer_bounds`, `metadata.filename` (nombre real en Storage)
-- **`adstudio_masters`** — variantes de master generadas, una por formato IAB, con `is_primary`
+- **`adstudio_formats`** — por proyecto: `iab_format`, `nombre_soporte`, `status` (`pending`/`producing`/`ready`/`incident`), `incidencias[]`, `copy`, `peso_max_kb`, `is_master` (uno solo por proyecto), `soportes[]` (medios/plataformas que necesitan ese tamaño), `source_psd_id` (PSD propio de este formato — ver "Múltiples PSDs independientes")
+- **`adstudio_assets`** — capas extraídas del PSD: `classification`, `frames[]` (autoritativo; `frame` deprecado), `persistent`, `discarded`, `hidden_in_psd`, `export_as_jpg`, `z_index`, `blend_mode`, `opacity`, `text_content`, `layer_bounds`, `metadata.filename` (nombre real en Storage), `source_psd_id` (id del asset `layer_type='psd'` del que proviene la capa)
+- **`adstudio_masters`** — variantes de master generadas, una por formato IAB, con `is_primary` y `format_id` (formato origen, relevante cuando hay varios masters por PSD)
 - **`adstudio_changes`** — `type` (A–E), `formats_affected[]`, `status`
 - **`approval_tokens`** — UUID → proyecto, `expires_at`, `approved_at`
 - **`subscriptions`** — `tier`, límites, `stripe_id`
@@ -80,6 +80,18 @@ Por cada formato del plan (menos el master):
 3. Claude Vision genera el HTML5 recomponiendo el layout completo — recibe el master renderizado (Browserless), las imágenes ya adaptadas y el resto de assets como imágenes sueltas
 4. Sharp compone el `fallback.jpg` con las capas reales (adaptadas cuando aplica)
 5. La pieza se genera una vez y se copia a una carpeta por cada entrada en `adstudio_formats.soportes[]` dentro del ZIP
+
+## Múltiples PSDs independientes
+
+Un proyecto puede tener varios PSDs subidos, cada uno tratado como una pieza independiente asociada a un formato del plan (en vez de mezclar todas sus capas en un único set de `adstudio_assets`):
+
+1. **Extracción** (`trigger/analyze-psd.ts`) — cada capa extraída guarda `source_psd_id` con el id del asset del PSD (`adstudio_assets.layer_type = 'psd'`) del que proviene.
+2. **Brief** (`components/project/brief-form.tsx`) — con más de un PSD subido se muestra "Material por formato": un select por PSD para asociarlo al formato del plan que produce (`adstudio_formats.source_psd_id`, vía `PATCH /api/brief/formats/[formatId]`). Con un único PSD, se asocia automáticamente al formato master.
+3. **Editor de capas** (`components/project/layers-editor.tsx`) — con varios PSDs se muestran pestañas (una por PSD), cada una filtrando `adstudio_assets` por su `source_psd_id` y usando las dimensiones del formato asociado para el canvas de preview. Con un único PSD, sin pestañas (comportamiento histórico).
+4. **Master** (`trigger/render-master.ts`) — un formato con `source_psd_id` genera su propio HTML5 a partir solo de sus capas, subido a `{project_id}/masters/{format_id}/...` y registrado en `adstudio_masters` con `format_id`. Con un único PSD (o generación puntual de un formato concreto), comportamiento idéntico al histórico (`{project_id}/master/...`).
+5. **Producción** (`trigger/render-adaptations.ts`) — los formatos CON `source_psd_id` ya están producidos (HTML5 directo desde su PSD) y solo se copian al ZIP de entrega; los formatos SIN `source_psd_id` se adaptan desde el master con FLUX Kontext + Claude Vision, como siempre.
+
+La aprobación del cliente (`/approve/[token]`) y el chat de cambios de master siguen operando sobre `adstudio_projects.master_html`/`master_run_id` a nivel de proyecto, no por master individual — con varios masters, la vista de Master (`app/project/[id]/master`) los lista todos pero el flujo de aprobación/refinamiento por chat aplica al master primario.
 
 ## Tiers y límites
 

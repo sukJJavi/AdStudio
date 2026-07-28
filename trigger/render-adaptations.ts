@@ -88,12 +88,21 @@ export const renderAdaptations = task({
       throw new Error("El proyecto no tiene formatos con especificación IAB válida.");
     }
 
+    // Bloque 11: los formatos con PSD propio ya se produjeron directamente en
+    // trigger/render-master.ts (su propio HTML5 a partir de su PSD) — no se
+    // adaptan desde el master con FLUX, solo se copian al ZIP de entrega
+    // (ver formatsWithOwnPsd más abajo).
     const formatsToProduce = unblockedFormats((allFormats ?? []) as ProjectFormat[])
-      .filter((format) => format.id !== masterEntry.format.id)
+      .filter((format) => format.id !== masterEntry.format.id && !format.source_psd_id)
       .map((format) => ({ format, spec: getIABFormatById(format.iab_format) }))
       .filter((x): x is { format: ProjectFormat; spec: IABFormat } => x.spec != null);
 
-    if (formatsToProduce.length === 0) {
+    const formatsWithOwnPsd = unblockedFormats((allFormats ?? []) as ProjectFormat[])
+      .filter((format) => format.id !== masterEntry.format.id && !!format.source_psd_id)
+      .map((format) => ({ format, spec: getIABFormatById(format.iab_format) }))
+      .filter((x): x is { format: ProjectFormat; spec: IABFormat } => x.spec != null);
+
+    if (formatsToProduce.length === 0 && formatsWithOwnPsd.length === 0) {
       throw new Error("No hay formatos disponibles para producir (todos bloqueados, sin especificación IAB, o es el master).");
     }
 
@@ -136,19 +145,24 @@ export const renderAdaptations = task({
       (a) => !a.discarded && BACKGROUND_CLASSIFICATIONS.has(a.classification ?? ""),
     );
 
-    metadata.set("step", "renderizando-master-con-browserless");
-    metadata.set("progress", 0.1);
-
-    // El master no cambia entre formatos: se renderiza UNA VEZ con
-    // Browserless (no dentro del loop) y se reutiliza como referencia visual
-    // para Claude y como imagen base para el outpainting de cada formato.
-    console.log("Renderizando master con Browserless...");
-    const masterRendered = await renderHtmlToImage(payload.projectId, masterEntry.spec.ancho, masterEntry.spec.alto);
-
     const zipEntries: ZipFileEntry[] = [];
     const manifestPieces: ManifestPieceEntry[] = [];
     const total = formatsToProduce.length;
     let producedCount = 0;
+
+    // El master no cambia entre formatos: se renderiza UNA VEZ con
+    // Browserless (no dentro del loop) y se reutiliza como referencia visual
+    // para Claude y como imagen base para el outpainting de cada formato.
+    // Solo hace falta si hay algún formato que SÍ se adapta con FLUX/Claude
+    // (formatsToProduce) — un proyecto donde todos los formatos tienen PSD
+    // propio no necesita este render.
+    let masterRendered: Buffer | null = null;
+    if (formatsToProduce.length > 0) {
+      metadata.set("step", "renderizando-master-con-browserless");
+      metadata.set("progress", 0.1);
+      console.log("Renderizando master con Browserless...");
+      masterRendered = await renderHtmlToImage(payload.projectId, masterEntry.spec.ancho, masterEntry.spec.alto);
+    }
 
     for (let i = 0; i < formatsToProduce.length; i++) {
       const { format, spec } = formatsToProduce[i];
@@ -194,7 +208,7 @@ export const renderAdaptations = task({
         console.log(`Formato ${n}/${total}: generando HTML5...`);
         const adaptedHtml = await adaptHtml5WithVision(
           masterHtml,
-          masterRendered,
+          masterRendered!,
           { width: masterEntry.spec.ancho, height: masterEntry.spec.alto },
           allAssets,
           formatAssetBuffers,
@@ -260,6 +274,68 @@ export const renderAdaptations = task({
         // Un formato con error no debe tirar abajo el resto de la producción.
         await supabase.from("adstudio_formats").update({ status: "incident" }).eq("id", format.id);
         console.error(`Error produciendo ${format.iab_format}:`, formatError);
+      }
+    }
+
+    // Bloque 11: formatos con PSD propio — ya se generaron en
+    // trigger/render-master.ts (index.html + fallback.jpg propios a partir de
+    // sus capas), aquí solo se copian al ZIP de entrega, sin FLUX ni Claude.
+    for (const { format, spec } of formatsWithOwnPsd) {
+      try {
+        const basePath = `${payload.projectId}/masters/${format.id}/${format.iab_format}`;
+
+        const [htmlBuffer, fallbackJpg] = await Promise.all([
+          downloadAsset(supabase, `${basePath}.html`),
+          downloadAsset(supabase, `${basePath}.jpg`),
+        ]);
+
+        if (!htmlBuffer || !fallbackJpg) {
+          throw new Error("El master de este formato todavía no se ha generado.");
+        }
+
+        const ownHtml = htmlBuffer.toString("utf-8");
+
+        const ownPngEntries = (
+          await Promise.all(
+            allAssets
+              .filter((a) => !a.discarded && a.source_psd_id === format.source_psd_id)
+              .flatMap((a) => {
+                const pngFilename = assetFilename(a);
+                return pngFilename && a.file_path ? [{ asset: a, pngFilename }] : [];
+              })
+              .map(async ({ asset, pngFilename }) => {
+                const buffer = await downloadAsset(supabase, asset.file_path);
+                if (!buffer) return null;
+                const exported = await exportBufferFor(buffer, !!asset.export_as_jpg);
+                return { filename: exportFilenameFor(pngFilename, !!asset.export_as_jpg), buffer: exported };
+              }),
+          )
+        ).filter((entry): entry is { filename: string; buffer: Buffer } => entry != null);
+
+        const pieceFolders = pieceFoldersFor(format);
+        for (const pieceFolder of pieceFolders) {
+          zipEntries.push({ path: `${pieceFolder}/index.html`, content: ownHtml });
+          for (const png of ownPngEntries) {
+            zipEntries.push({ path: `${pieceFolder}/${png.filename}`, content: png.buffer });
+          }
+          zipEntries.push({ path: `${pieceFolder}/fallback.jpg`, content: fallbackJpg });
+        }
+
+        manifestPieces.push({
+          nombreSoporte: format.nombre_soporte,
+          iabFormat: format.iab_format,
+          width: spec.ancho,
+          height: spec.alto,
+          jpgSizeBytes: fallbackJpg.byteLength,
+          htmlSizeBytes: Buffer.byteLength(ownHtml, "utf8"),
+          incidencias: format.incidencias ?? [],
+          soportes: format.soportes ?? [],
+        });
+
+        producedCount += 1;
+      } catch (formatError) {
+        await supabase.from("adstudio_formats").update({ status: "incident" }).eq("id", format.id);
+        console.error(`Error copiando master propio de ${format.iab_format}:`, formatError);
       }
     }
 

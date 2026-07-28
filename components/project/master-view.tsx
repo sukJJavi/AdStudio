@@ -31,6 +31,7 @@ export function MasterView({
   hasUnblockedFormat,
   secondLargestFormat,
   initialChanges,
+  formatLabelsByIabFormat = {},
 }: {
   projectId: string;
   cliente: string;
@@ -40,6 +41,8 @@ export function MasterView({
   hasUnblockedFormat: boolean;
   secondLargestFormat: { iabFormat: string; nombreSoporte: string } | null;
   initialChanges: MasterChangeEntry[];
+  /** Bloque 11: nombre de soporte y si tiene PSD propio, por iab_format — para etiquetar variantes multi-PSD. */
+  formatLabelsByIabFormat?: Record<string, { nombreSoporte: string; ownPsd: boolean }>;
 }) {
   const [status, setStatus] = useState(initialStatus);
   const [generating, setGenerating] = useState(false);
@@ -406,25 +409,33 @@ export function MasterView({
           {otherMasters.length > 0 && (
             <Card>
               <CardHeader>
-                <CardTitle>Otras variantes</CardTitle>
+                <CardTitle>
+                  {otherMasters.some((v) => formatLabelsByIabFormat[v.iabFormat]?.ownPsd)
+                    ? "Otros masters (uno por PSD)"
+                    : "Otras variantes"}
+                </CardTitle>
               </CardHeader>
               <CardContent className="grid gap-4 sm:grid-cols-2">
-                {otherMasters.map((variant) => (
-                  <div key={variant.id} className="space-y-2">
-                    {variant.jpgUrl && (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={variant.jpgUrl}
-                        alt={`Variante ${variant.iabFormat}`}
-                        className="w-full rounded-md border border-border"
-                      />
-                    )}
-                    <p className="text-xs text-muted-foreground">
-                      {variant.iabFormat} · {variant.width}×{variant.height}px
-                      {variant.jpgSizeBytes != null ? ` · ${formatBytes(variant.jpgSizeBytes)}` : ""}
-                    </p>
-                  </div>
-                ))}
+                {otherMasters.map((variant) => {
+                  const label = formatLabelsByIabFormat[variant.iabFormat];
+                  return (
+                    <div key={variant.id} className="space-y-2">
+                      {variant.jpgUrl && (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img
+                          src={variant.jpgUrl}
+                          alt={`Variante ${variant.iabFormat}`}
+                          className="w-full rounded-md border border-border"
+                        />
+                      )}
+                      <p className="text-xs text-muted-foreground">
+                        {label?.nombreSoporte ?? variant.iabFormat} · {variant.width}×{variant.height}px
+                        {variant.jpgSizeBytes != null ? ` · ${formatBytes(variant.jpgSizeBytes)}` : ""}
+                        {label?.ownPsd ? " · PSD propio" : ""}
+                      </p>
+                    </div>
+                  );
+                })}
               </CardContent>
             </Card>
           )}

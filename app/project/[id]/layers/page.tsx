@@ -1,5 +1,6 @@
 import { getProjectLayers } from "@/lib/layers";
 import { getProjectFormats } from "@/lib/formats";
+import { getProjectAssets } from "@/lib/assets";
 import { getIABFormatById } from "@/lib/iab/specs";
 import { LayersEditor } from "@/components/project/layers-editor";
 
@@ -10,7 +11,11 @@ export default async function LayersPage({
 }) {
   const { id } = await params;
 
-  const [layers, formats] = await Promise.all([getProjectLayers(id), getProjectFormats(id)]);
+  const [layers, formats, assets] = await Promise.all([
+    getProjectLayers(id),
+    getProjectFormats(id),
+    getProjectAssets(id),
+  ]);
 
   const largestFormat = formats.reduce<{ ancho: number; alto: number } | null>((max, f) => {
     const spec = getIABFormatById(f.iab_format);
@@ -19,12 +24,16 @@ export default async function LayersPage({
     return max;
   }, null) ?? { ancho: 300, alto: 250 };
 
+  const psdAssets = assets.filter((a) => a.layer_type === "psd");
+
   return (
     <LayersEditor
       projectId={id}
       initialLayers={layers}
       canvasWidth={largestFormat.ancho}
       canvasHeight={largestFormat.alto}
+      psdAssets={psdAssets}
+      formats={formats}
     />
   );
 }

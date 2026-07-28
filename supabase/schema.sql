@@ -82,6 +82,10 @@ create table if not exists adstudio_formats (
   -- deduplicación en trigger/parse-media-plan.ts pasa a ser por tamaño
   -- únicamente, así que un mismo formato puede cubrir varios medios.
   soportes jsonb not null default '[]',
+  -- Bloque 11: PSD propio de este formato (references adstudio_assets con
+  -- layer_type = 'psd') cuando el proyecto tiene varios PSDs independientes
+  -- — ver app/api/brief/formats/[formatId] y trigger/render-master.ts.
+  source_psd_id uuid default null,
   created_at timestamptz not null default now()
 );
 
@@ -96,6 +100,7 @@ alter table adstudio_formats alter column is_master set not null;
 alter table adstudio_formats add column if not exists soportes jsonb default '[]';
 update adstudio_formats set soportes = '[]' where soportes is null;
 alter table adstudio_formats alter column soportes set not null;
+alter table adstudio_formats add column if not exists source_psd_id uuid default null;
 
 create table if not exists adstudio_assets (
   id uuid primary key default gen_random_uuid(),
@@ -136,6 +141,10 @@ create table if not exists adstudio_assets (
   -- lo activa el usuario por capa (fondo/imagen_principal) para el ZIP.
   hidden_in_psd boolean default false,
   export_as_jpg boolean default false,
+  -- Bloque 11: asset del PSD (layer_type = 'psd') del que proviene esta capa
+  -- — agrupa capas por PSD origen cuando el proyecto tiene varios PSDs
+  -- independientes, ver trigger/analyze-psd.ts.
+  source_psd_id uuid default null,
   created_at timestamptz not null default now()
 );
 
@@ -157,6 +166,7 @@ alter table adstudio_assets add column if not exists frames integer[] default nu
 
 alter table adstudio_assets add column if not exists hidden_in_psd boolean default false;
 alter table adstudio_assets add column if not exists export_as_jpg boolean default false;
+alter table adstudio_assets add column if not exists source_psd_id uuid default null;
 
 -- Masters generados (Bloque 2). Un proyecto puede tener varias variantes
 -- (una por formato IAB usado como canvas); is_primary marca la usada para
@@ -172,8 +182,13 @@ create table if not exists adstudio_masters (
   jpg_size_bytes integer,
   is_primary boolean not null default false,
   created_at timestamptz not null default now(),
-  unique (project_id, iab_format)
+  unique (project_id, iab_format),
+  -- Bloque 11: formato del que proviene este master cuando el proyecto tiene
+  -- varios masters (uno por PSD) — permite localizarlo directamente.
+  format_id uuid default null references adstudio_formats(id) on delete set null
 );
+
+alter table adstudio_masters add column if not exists format_id uuid default null references adstudio_formats(id) on delete set null;
 
 create table if not exists adstudio_changes (
   id uuid primary key default gen_random_uuid(),

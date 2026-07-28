@@ -284,6 +284,10 @@ export const analyzePsd = task({
             layer_name: layer.name ?? "capa sin nombre",
             layer_type: layerTypeOf(layer),
             classification: null,
+            // Agrupa la capa con su PSD origen (Bloque 11) — permite
+            // separar el material por formato cuando el proyecto tiene
+            // varios PSDs independientes (ver app/api/brief/formats/[formatId]).
+            source_psd_id: psdAsset.id,
             width,
             height,
             dpi,

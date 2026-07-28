@@ -16,10 +16,11 @@ export default async function BriefPage({
   ]);
 
   const excelAsset = assets.find((a) => a.layer_type === "excel") ?? null;
+  const psdAssets = assets.filter((a) => a.layer_type === "psd");
 
   return (
     <div className="mx-auto max-w-4xl">
-      <BriefForm project={project} formats={formats} excelAsset={excelAsset} />
+      <BriefForm project={project} formats={formats} excelAsset={excelAsset} psdAssets={psdAssets} />
     </div>
   );
 }

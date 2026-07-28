@@ -6,9 +6,10 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import type { ProjectLayer } from "@/lib/layers";
-import { LAYER_CLASSIFICATIONS, type LayerClassification } from "@/lib/types";
+import { LAYER_CLASSIFICATIONS, type LayerClassification, type ProjectAsset, type ProjectFormat } from "@/lib/types";
 import { FormatIncidentCard } from "@/components/incident-report/format-incident-card";
 import type { AnalysisFormatStatus } from "@/lib/iab/incident-analyzer";
+import { getIABFormatById } from "@/lib/iab/specs";
 
 const FRAME_OPTIONS = [0, 1, 2, 3, 4];
 
@@ -78,11 +79,17 @@ export function LayersEditor({
   initialLayers,
   canvasWidth,
   canvasHeight,
+  psdAssets = [],
+  formats = [],
 }: {
   projectId: string;
   initialLayers: ProjectLayer[];
   canvasWidth: number;
   canvasHeight: number;
+  /** PSDs subidos al proyecto (layer_type='psd') — con más de uno, se muestran pestañas por PSD. */
+  psdAssets?: ProjectAsset[];
+  /** Formatos del plan, para resolver las dimensiones del canvas por PSD (adstudio_formats.source_psd_id). */
+  formats?: ProjectFormat[];
 }) {
   const router = useRouter();
   const [layers, setLayers] = useState<ProjectLayer[]>(initialLayers);
@@ -96,7 +103,21 @@ export function LayersEditor({
   const [checkingIncidents, setCheckingIncidents] = useState(false);
   const [blockedReport, setBlockedReport] = useState<AnalysisFormatStatus[] | null>(null);
 
-  const sorted = useMemo(() => [...layers].sort((a, b) => a.z_index - b.z_index), [layers]);
+  // Con un único PSD (o ninguno) se mantiene el comportamiento actual, sin pestañas.
+  const showPsdTabs = psdAssets.length > 1;
+  const [activePsdId, setActivePsdId] = useState<string | null>(showPsdTabs ? psdAssets[0].id : null);
+
+  const activeFormatForPsd = activePsdId ? formats.find((f) => f.source_psd_id === activePsdId) : null;
+  const activeSpec = activeFormatForPsd ? getIABFormatById(activeFormatForPsd.iab_format) : null;
+  const effectiveCanvasWidth = activeSpec?.ancho ?? canvasWidth;
+  const effectiveCanvasHeight = activeSpec?.alto ?? canvasHeight;
+
+  const scopedLayers = useMemo(
+    () => (showPsdTabs && activePsdId ? layers.filter((l) => l.source_psd_id === activePsdId) : layers),
+    [layers, showPsdTabs, activePsdId],
+  );
+
+  const sorted = useMemo(() => [...scopedLayers].sort((a, b) => a.z_index - b.z_index), [scopedLayers]);
 
   function updateLayer(id: string, patch: Partial<ProjectLayer>) {
     setLayers((prev) => prev.map((l) => (l.id === id ? { ...l, ...patch } : l)));
@@ -264,7 +285,27 @@ export function LayersEditor({
   );
 
   return (
-    <div className="flex flex-col gap-6 lg:flex-row">
+    <div className="flex flex-col gap-4">
+      {showPsdTabs && (
+        <div className="flex flex-wrap items-center gap-1 border-b border-[#232935] pb-2 text-sm">
+          {psdAssets.map((psd) => {
+            const format = formats.find((f) => f.source_psd_id === psd.id);
+            const spec = format ? getIABFormatById(format.iab_format) : null;
+            const label = spec ? `${spec.ancho}x${spec.alto}` : (format?.nombre_soporte ?? "Sin formato");
+            return (
+              <Button
+                key={psd.id}
+                size="sm"
+                variant={activePsdId === psd.id ? "default" : "outline"}
+                onClick={() => setActivePsdId(psd.id)}
+              >
+                {label} — {psd.layer_name}
+              </Button>
+            );
+          })}
+        </div>
+      )}
+      <div className="flex flex-col gap-6 lg:flex-row">
       <div className="flex w-full flex-col gap-3 lg:w-[40%]">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold">Capas ({visible.length})</h2>
@@ -477,8 +518,8 @@ export function LayersEditor({
           <div
             style={{
               position: "relative",
-              width: canvasWidth,
-              height: canvasHeight,
+              width: effectiveCanvasWidth,
+              height: effectiveCanvasHeight,
               background: "#070A0F",
               overflow: "hidden",
             }}
@@ -525,6 +566,7 @@ export function LayersEditor({
             )}
           </div>
         </div>
+      </div>
       </div>
     </div>
   );
