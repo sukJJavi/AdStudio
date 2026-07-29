@@ -1,46 +1,25 @@
-import sharp from "sharp";
+import sharp, { type OverlayOptions } from "sharp";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ProjectAsset, TextLayerMetadata } from "@/lib/types";
 
 const TARGET_MAX_BYTES = 50 * 1024;
 
-function sanitizeLayerName(name: string): string {
-  return name.trim().toLowerCase().replace(/\s+/g, "_");
-}
-
-/**
- * Nombre del PNG original en Storage para una capa: `metadata.filename` con la
- * extensión normalizada a `.png` (el `.jpg` solo existe en el ZIP cuando
- * `export_as_jpg`, ver lib/render/export-format.ts — en Storage siempre está
- * el PNG). Si falta `metadata.filename` (asset sin metadata seteado
- * correctamente), cae a `layer_name` saneado + `.png`.
- */
-function pngFilenameFor(layer: Pick<ProjectAsset, "metadata" | "layer_name">): string | null {
-  const metadataFilename = (layer.metadata as TextLayerMetadata | undefined)?.filename ?? null;
-
-  if (metadataFilename) {
-    return metadataFilename.replace(/\.jpg$/i, ".png");
-  }
-
-  if (layer.layer_name) {
-    return `${sanitizeLayerName(layer.layer_name)}.png`;
-  }
-
-  return null;
+function filenameOf(layer: ProjectAsset): string | null {
+  return (layer.metadata as TextLayerMetadata | undefined)?.filename ?? null;
 }
 
 /**
  * Compone el fallback.jpg a partir de las capas reales del frame del CTA
- * (persistentes + capas de ese frame, ordenadas por z_index) — o, si no hay
- * ninguna capa clasificada como CTA, del último frame disponible. Nunca
- * re-renderiza el banner desde cero con Satori, así que el JPG de respaldo
- * se parece al banner real. Reduce calidad (85→75→...→30) hasta bajar de
- * 50KB; si ni con la calidad más baja lo consigue, devuelve esa.
+ * (persistentes + capas de ese frame, ordenadas por z_index). Nunca
+ * re-renderiza el banner desde cero con Satori, así que el JPG de respaldo se
+ * parece al banner real. Reduce calidad (85→75→...→30) hasta bajar de 50KB;
+ * si ni con la calidad más baja lo consigue, devuelve esa.
  *
  * `assetOverrides` (asset.id → buffer PNG): capas ya adaptadas a `format`
  * fuera de esta función (p. ej. fondo/imagen_principal adaptados con FLUX
- * Kontext por formato en trigger/render-adaptations.ts) — se usan en vez de
- * descargar el PNG original de Storage para esa capa.
+ * Kontext por formato en trigger/render-adaptations.ts) — ya vienen al
+ * tamaño exacto del formato destino, así que se usan tal cual como capa de
+ * fondo del canvas completo en vez de recortarse por layer_bounds del master.
  */
 export async function renderFallbackFromFrame(
   projectId: string,
@@ -49,114 +28,144 @@ export async function renderFallbackFromFrame(
   supabase: SupabaseClient,
   assetOverrides?: Map<string, Buffer>,
 ): Promise<Buffer> {
-  // 1. Encontrar el frame del CTA.
+  // 1. Buscar la capa CTA para saber qué frame usar.
   const ctaAsset = assets.find(
-    (a) => a.classification === "cta" && !a.discarded && a.frames && a.frames.length > 0,
+    (a) => !a.discarded && a.classification === "cta" && a.frames && a.frames.length > 0,
   );
+  const ctaFrame = ctaAsset ? Math.max(...(ctaAsset.frames ?? [])) : null;
 
-  const ctaFrame = ctaAsset ? Math.max(...(ctaAsset.frames as number[])) : null;
+  console.log("Fallback: CTA frame detectado:", ctaFrame);
 
-  // 2. Seleccionar capas para el fallback: persistentes + capas del frame del
-  // CTA. Si no hay CTA, usar todas las capas del último frame.
+  // Seleccionar capas: persistentes + frame del CTA.
   const fallbackLayers = assets
-    .filter((a) => !a.discarded)
     .filter((a) => {
+      if (a.discarded) return false;
       if (a.persistent) return true;
       if (ctaFrame !== null && a.frames?.includes(ctaFrame)) return true;
-      if (ctaFrame === null && a.frames && a.frames.length > 0) {
-        return a.frames.includes(Math.max(...a.frames));
-      }
       return false;
     })
-    .sort((a, b) => a.z_index - b.z_index);
+    .sort((a, b) => (a.z_index ?? 0) - (b.z_index ?? 0));
 
   console.log(
-    "Fallback layers:",
+    "Fallback: capas seleccionadas:",
     fallbackLayers.map((l) => ({
       name: l.layer_name,
-      classification: l.classification,
-      persistent: l.persistent,
-      frames: l.frames,
-      export_as_jpg: l.export_as_jpg,
+      id: l.id,
+      hasOverride: assetOverrides?.has(l.id) ?? false,
+      filename: filenameOf(l),
     })),
   );
 
-  console.log(
-    "Fallback overrides disponibles:",
-    assetOverrides ? Array.from(assetOverrides.keys()) : "ninguno",
-  );
-  console.log(
-    "Asset IDs en fallback:",
-    fallbackLayers.map((l) => ({ id: l.id, name: l.layer_name })),
-  );
-
-  // 3. Componer con sharp — canvas negro base.
-  const composite: { input: Buffer; top: number; left: number }[] = [];
+  // 2. Descargar o usar override para cada capa.
+  const compositeInputs: OverlayOptions[] = [];
 
   for (const layer of fallbackLayers) {
-    // Descargar PNG original de Storage (siempre PNG para composición): el
-    // fichero convertido a JPG por export_as_jpg solo existe en el ZIP, no en
-    // Storage — ver lib/render/export-format.ts.
-    const pngFilename = pngFilenameFor(layer);
-    if (!pngFilename) {
-      console.error("Capa sin metadata.filename ni layer_name, no se puede componer:", {
-        id: layer.id,
-        layer_name: layer.layer_name,
-      });
+    const bounds = layer.layer_bounds;
+    if (!bounds) {
+      console.log("Fallback: sin bounds, skip:", layer.layer_name);
       continue;
     }
 
-    let layerBuffer = assetOverrides?.get(layer.id);
+    // Obtener buffer: override primero, luego Storage.
+    let rawBuffer: Buffer | null = null;
 
-    if (!layerBuffer) {
-      const storagePath = `${projectId}/layers/${pngFilename}`;
-
-      console.log("Intentando descargar:", storagePath);
-      const { data, error } = await supabase.storage.from("adstudio-projects").download(storagePath);
-      console.log("Resultado:", { ok: !!data, error: error?.message });
-
-      if (error || !data) {
-        console.error("Error descargando layer, se omite del fallback pero se sigue con el resto:", {
-          storagePath,
-          error,
-        });
+    if (assetOverrides?.has(layer.id)) {
+      rawBuffer = assetOverrides.get(layer.id)!;
+      console.log("Fallback: usando override para:", layer.layer_name);
+    } else {
+      const filename = filenameOf(layer);
+      if (!filename) {
+        console.log("Fallback: sin filename, skip:", layer.layer_name);
         continue;
       }
+      const storagePath = `${projectId}/layers/${filename.replace(/\.jpg$/i, ".png")}`;
+      console.log("Fallback: descargando:", storagePath);
 
-      layerBuffer = Buffer.from(await data.arrayBuffer());
+      const { data, error } = await supabase.storage.from("adstudio-projects").download(storagePath);
+
+      if (error || !data) {
+        console.log("Fallback: error descargando:", storagePath, error?.message);
+        continue;
+      }
+      rawBuffer = Buffer.from(await data.arrayBuffer());
     }
-    const bounds = layer.layer_bounds;
-    if (!bounds) continue;
 
-    // Calcular intersección visible con el canvas.
-    const srcX = Math.max(0, -bounds.x);
-    const srcY = Math.max(0, -bounds.y);
-    const dstX = Math.max(0, bounds.x);
-    const dstY = Math.max(0, bounds.y);
+    if (!rawBuffer) continue;
 
-    const visibleWidth = Math.min(bounds.width - srcX, format.width - dstX);
-    const visibleHeight = Math.min(bounds.height - srcY, format.height - dstY);
+    // 3. Calcular área visible en el canvas.
+    const srcX = Math.max(0, Math.round(-bounds.x));
+    const srcY = Math.max(0, Math.round(-bounds.y));
+    const dstX = Math.max(0, Math.round(bounds.x));
+    const dstY = Math.max(0, Math.round(bounds.y));
 
-    if (visibleWidth <= 0 || visibleHeight <= 0) continue;
+    const visibleW = Math.min(Math.round(bounds.width) - srcX, format.width - dstX);
+    const visibleH = Math.min(Math.round(bounds.height) - srcY, format.height - dstY);
 
-    const croppedBuffer = await sharp(layerBuffer)
-      .extract({
-        left: Math.round(srcX),
-        top: Math.round(srcY),
-        width: Math.round(visibleWidth),
-        height: Math.round(visibleHeight),
-      })
-      .png()
-      .toBuffer();
+    if (visibleW <= 0 || visibleH <= 0) {
+      console.log("Fallback: sin área visible, skip:", layer.layer_name);
+      continue;
+    }
 
-    composite.push({
-      input: croppedBuffer,
-      top: Math.round(dstY),
-      left: Math.round(dstX),
-    });
+    try {
+      // Si el buffer viene de un override de FLUX, ya tiene las dimensiones
+      // del formato destino — usarlo directamente sin extract.
+      let croppedBuffer: Buffer;
+
+      if (assetOverrides?.has(layer.id)) {
+        // Override de FLUX: redimensionar al canvas completo.
+        croppedBuffer = await sharp(rawBuffer)
+          .resize(format.width, format.height, { fit: "cover" })
+          .png()
+          .toBuffer();
+
+        compositeInputs.push({
+          input: croppedBuffer,
+          top: 0,
+          left: 0,
+        });
+      } else {
+        // Asset normal del master: recortar al área visible.
+        const meta = await sharp(rawBuffer).metadata();
+        const imgW = meta.width ?? bounds.width;
+        const imgH = meta.height ?? bounds.height;
+
+        const extractLeft = Math.min(srcX, imgW - 1);
+        const extractTop = Math.min(srcY, imgH - 1);
+        const extractW = Math.min(visibleW, imgW - extractLeft);
+        const extractH = Math.min(visibleH, imgH - extractTop);
+
+        if (extractW <= 0 || extractH <= 0) continue;
+
+        croppedBuffer = await sharp(rawBuffer)
+          .extract({
+            left: Math.round(extractLeft),
+            top: Math.round(extractTop),
+            width: Math.round(extractW),
+            height: Math.round(extractH),
+          })
+          .png()
+          .toBuffer();
+
+        compositeInputs.push({
+          input: croppedBuffer,
+          top: dstY,
+          left: dstX,
+        });
+      }
+
+      console.log("Fallback: capa añadida OK:", layer.layer_name);
+    } catch (err) {
+      console.error(
+        "Fallback: error procesando capa:",
+        layer.layer_name,
+        err instanceof Error ? err.message : err,
+      );
+    }
   }
 
-  // 4. Exportar como JPG < 50KB.
+  // 4. Componer sobre canvas negro.
+  console.log("Fallback: componiendo", compositeInputs.length, "capas");
+
   let quality = 85;
   let result: Buffer;
 
@@ -169,12 +178,13 @@ export async function renderFallbackFromFrame(
         background: { r: 0, g: 0, b: 0 },
       },
     })
-      .composite(composite)
+      .composite(compositeInputs)
       .jpeg({ quality })
       .toBuffer();
 
     quality -= 10;
-  } while (result.byteLength > TARGET_MAX_BYTES && quality > 30);
+  } while (result.length > TARGET_MAX_BYTES && quality > 30);
 
+  console.log("Fallback: generado, tamaño:", result.length, "bytes");
   return result;
 }
