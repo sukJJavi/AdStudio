@@ -113,22 +113,36 @@ export async function PATCH(
           const oldPath = `${currentAsset.project_id}/layers/${currentFilename}`;
           const newPath = `${currentAsset.project_id}/layers/${newFilename}`;
 
-          const { error: copyError } = await supabase.storage
+          // Dos assets pueden llegar al mismo newFilename (p. ej. dos capas
+          // "imagen_principal" se reclasifican a "logo" por separado) — copy()
+          // sobre un path ya ocupado falla con "The resource already exists".
+          // Se comprueba antes y, si ya existe, se deja el archivo/nombre tal
+          // cual y solo se actualiza classification en la BD.
+          const { data: existing } = await supabase.storage
             .from("adstudio-projects")
-            .copy(oldPath, newPath);
+            .list(`${currentAsset.project_id}/layers`, { search: newFilename });
 
-          if (copyError) {
-            return NextResponse.json(
-              { error: `No se pudo renombrar el archivo en Storage: ${copyError.message}` },
-              { status: 500 },
-            );
+          if (existing && existing.length > 0) {
+            console.log("Target filename already exists, skipping rename:", newFilename);
+          } else {
+            const { error: copyError } = await supabase.storage
+              .from("adstudio-projects")
+              .copy(oldPath, newPath);
+
+            if (copyError) {
+              return NextResponse.json(
+                { error: `No se pudo renombrar el archivo en Storage: ${copyError.message}` },
+                { status: 500 },
+              );
+            }
+
+            await supabase.storage.from("adstudio-projects").remove([oldPath]);
+
+            update.metadata = { ...(currentAsset.metadata as TextLayerMetadata), filename: newFilename };
+            update.file_path = newPath;
           }
-
-          await supabase.storage.from("adstudio-projects").remove([oldPath]);
-
-          update.metadata = { ...(currentAsset.metadata as TextLayerMetadata), filename: newFilename };
-          update.file_path = newPath;
         }
+
       }
     }
   }
