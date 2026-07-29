@@ -81,6 +81,15 @@ export async function renderFallbackFromFrame(
     })),
   );
 
+  console.log(
+    "Fallback overrides disponibles:",
+    assetOverrides ? Array.from(assetOverrides.keys()) : "ninguno",
+  );
+  console.log(
+    "Asset IDs en fallback:",
+    fallbackLayers.map((l) => ({ id: l.id, name: l.layer_name })),
+  );
+
   // 3. Componer con sharp — canvas negro base.
   const composite: { input: Buffer; top: number; left: number }[] = [];
 

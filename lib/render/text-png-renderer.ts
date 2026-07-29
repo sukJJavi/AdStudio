@@ -13,6 +13,8 @@ export interface TextRenderOptions {
   fontName: string;
   /** fontSize de Photoshop (metadata.fontSize de la capa). */
   sourceFontSize: number;
+  /** Ancho del PSD master (adstudio_projects.psd_width). */
+  sourcePsdWidth: number;
   /** Altura del PSD master (adstudio_projects.psd_height). */
   sourcePsdHeight: number;
   /** Ancho del formato destino. */
@@ -64,12 +66,27 @@ function wrapText(
  * master cuando hay una fuente propia resuelta (ver lib/render/font-resolver.ts).
  */
 export async function renderTextAsPng(opts: TextRenderOptions): Promise<Buffer> {
-  // 1. Escala uniforme master -> formato destino, basada en la altura (igual
-  // criterio que el resto del pipeline de adaptaciones: un único factor de
-  // escala evita deformar el texto si el formato destino cambia de ratio).
-  const scaleFactor = opts.targetHeight / opts.sourcePsdHeight;
+  // 1. Escala master -> formato destino. Escalar solo por altura deforma el
+  // texto cuando el master es vertical y el destino horizontal (p. ej.
+  // 1080x1920 -> 728x90): la altura se reduce muchísimo más que el ancho y el
+  // fontSize resultante es ilegible (~7px). En ese caso se usa la media
+  // geométrica de los factores de ancho y alto, que no exagera en ninguna
+  // dirección. Con orientaciones equivalentes, se mantiene el criterio
+  // original (escalar por altura).
+  const sourceIsVertical = opts.sourcePsdHeight > opts.sourcePsdWidth;
+  const targetIsVertical = opts.targetHeight > opts.targetWidth;
+
+  let scaleFactor: number;
+  if (sourceIsVertical && !targetIsVertical) {
+    const widthScale = opts.targetWidth / opts.sourcePsdWidth;
+    const heightScale = opts.targetHeight / opts.sourcePsdHeight;
+    scaleFactor = Math.sqrt(widthScale * heightScale);
+  } else {
+    scaleFactor = opts.targetHeight / opts.sourcePsdHeight;
+  }
+
   let fontSize = Math.round(opts.sourceFontSize * scaleFactor);
-  fontSize = Math.max(8, Math.min(fontSize, 200)); // clamp
+  fontSize = Math.max(8, Math.min(fontSize, 120)); // clamp
 
   // 2. Área disponible en el formato destino — bounds del master escalados.
   const areaWidth = Math.max(1, Math.round(opts.sourceLayerBounds.width * scaleFactor));
@@ -146,13 +163,24 @@ export async function renderTextAsPng(opts: TextRenderOptions): Promise<Buffer> 
   });
 
   // node-canvas en Linux (Trigger.dev) a veces no puede rasterizar una fuente
-  // TTF custom y la renderiza como tofu (glifos vacíos) sin lanzar error — se
-  // detecta comprobando si algún pixel no-alpha tiene contenido real; si no,
-  // se re-renderiza con la fuente del sistema para que el texto sea legible.
-  const imageData = ctx.getImageData(0, 0, areaWidth, areaHeight);
-  const hasContent = imageData.data.some((val, i) => i % 4 !== 3 && val > 0);
+  // TTF custom y la renderiza como tofu (glifos con relleno uniforme) sin
+  // lanzar error ni dejar los píxeles vacíos, así que comprobar solo alpha no
+  // sirve. Se detecta por variación de color: texto real produce múltiples
+  // valores de canal rojo (anti-aliasing, bordes de glifo); tofu o un canvas
+  // vacío produce un puñado de valores uniformes.
+  const sampleWidth = Math.min(areaWidth, 100);
+  const sampleHeight = Math.min(areaHeight, 50);
+  const imageData = ctx.getImageData(0, 0, sampleWidth, sampleHeight);
+  const pixels = imageData.data;
+  const uniqueValues = new Set<number>();
+  for (let i = 0; i < pixels.length; i += 4) {
+    if (pixels[i + 3] > 0) {
+      uniqueValues.add(pixels[i]);
+    }
+  }
+  const isTofu = uniqueValues.size < 3;
 
-  if (!hasContent) {
+  if (isTofu) {
     console.warn("Font rendered as tofu, falling back to system font:", familyName);
     ctx.clearRect(0, 0, areaWidth, areaHeight);
     ctx.fillStyle = opts.textColor ?? "#FFFFFF";

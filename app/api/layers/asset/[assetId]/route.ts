@@ -2,6 +2,26 @@ import { NextRequest, NextResponse } from "next/server";
 import { createSessionSupabaseClient } from "@/lib/supabase/server-session";
 import { requireProjectOwnership } from "@/lib/authorization";
 import { LAYER_PATCHABLE_FIELDS, type LayerPatchableField } from "@/lib/layers";
+import { baseFilenameFor } from "@/lib/psd/filename";
+import type { ProjectAsset, TextLayerMetadata } from "@/lib/types";
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Si `filename` es exactamente `${expectedBase}.png` o `${expectedBase}_{N}.png`
+ * (índice de desambiguación de trigger/analyze-psd.ts#uniqueFilename), devuelve
+ * ese índice ("" si no hay). `null` si el filename no coincide con ese base —
+ * en ese caso no se toca (p. ej. el usuario ya lo renombró a mano, o es un
+ * "desconocido" cuyo nombre viene del layer_name original, no de classification).
+ */
+function matchingDisambiguationSuffix(filename: string, expectedBase: string): string | null {
+  const withoutExt = filename.replace(/\.png$/i, "");
+  if (withoutExt === expectedBase) return "";
+  const match = withoutExt.match(new RegExp(`^${escapeRegExp(expectedBase)}_(\\d+)$`));
+  return match ? match[1] : null;
+}
 
 export async function PATCH(
   req: NextRequest,
@@ -14,7 +34,7 @@ export async function PATCH(
 
   const { data: asset } = await supabase
     .from("adstudio_assets")
-    .select("id, project_id")
+    .select("*")
     .eq("id", assetId)
     .single();
 
@@ -22,12 +42,14 @@ export async function PATCH(
     return NextResponse.json({ error: "Capa no encontrada" }, { status: 404 });
   }
 
-  const auth = await requireProjectOwnership(asset.project_id as string);
+  const currentAsset = asset as ProjectAsset;
+
+  const auth = await requireProjectOwnership(currentAsset.project_id);
   if (!auth.ok) {
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
 
-  const update: Partial<Record<LayerPatchableField, unknown>> = {};
+  const update: Partial<Record<LayerPatchableField, unknown>> & { metadata?: TextLayerMetadata; file_path?: string } = {};
   for (const field of LAYER_PATCHABLE_FIELDS) {
     if (field in body) update[field] = body[field];
   }
@@ -48,6 +70,67 @@ export async function PATCH(
   if (update.persistent === true) {
     update.frame = null;
     update.frames = null;
+  }
+
+  // Si cambia classification y el filename actual en Storage codifica la
+  // clasificación anterior (naming de trigger/analyze-psd.ts#baseFilenameFor:
+  // `f{N}_{classification}.png`, `{classification}.png`, o el nombre reservado
+  // de persistentes), renombrar el archivo para que siga reflejando el rol real
+  // de la capa — Claude Vision y el ZIP de entrega lo interpretan por nombre.
+  if (typeof update.classification === "string" && update.classification !== currentAsset.classification) {
+    const newClassification = update.classification;
+    const oldClassification = currentAsset.classification ?? "";
+    const currentFilename = (currentAsset.metadata as TextLayerMetadata | undefined)?.filename ?? null;
+
+    if (currentFilename) {
+      const oldFrame = currentAsset.frames?.[0] ?? currentAsset.frame ?? null;
+      const oldBase = baseFilenameFor({
+        classification: oldClassification,
+        frame: oldFrame,
+        persistent: !!currentAsset.persistent,
+        layerName: currentAsset.layer_name ?? "capa",
+      });
+
+      const suffix = matchingDisambiguationSuffix(currentFilename, oldBase);
+
+      if (suffix !== null) {
+        // frame/persistent no vienen necesariamente en este PATCH (puede ser
+        // solo un cambio de classification) — se usan los del PATCH si están
+        // presentes, si no los del asset actual.
+        const newPersistent = "persistent" in update ? !!update.persistent : !!currentAsset.persistent;
+        const newFrame = "frames" in update ? ((update.frames as number[] | null)?.[0] ?? null) : oldFrame;
+
+        const newBase = baseFilenameFor({
+          classification: newClassification,
+          frame: newPersistent ? null : newFrame,
+          persistent: newPersistent,
+          layerName: currentAsset.layer_name ?? "capa",
+        });
+
+        const newFilename = suffix ? `${newBase}_${suffix}.png` : `${newBase}.png`;
+
+        if (newFilename !== currentFilename) {
+          const oldPath = `${currentAsset.project_id}/layers/${currentFilename}`;
+          const newPath = `${currentAsset.project_id}/layers/${newFilename}`;
+
+          const { error: copyError } = await supabase.storage
+            .from("adstudio-projects")
+            .copy(oldPath, newPath);
+
+          if (copyError) {
+            return NextResponse.json(
+              { error: `No se pudo renombrar el archivo en Storage: ${copyError.message}` },
+              { status: 500 },
+            );
+          }
+
+          await supabase.storage.from("adstudio-projects").remove([oldPath]);
+
+          update.metadata = { ...(currentAsset.metadata as TextLayerMetadata), filename: newFilename };
+          update.file_path = newPath;
+        }
+      }
+    }
   }
 
   const { data: updated, error } = await supabase

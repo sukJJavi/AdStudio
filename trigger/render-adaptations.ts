@@ -66,7 +66,11 @@ export const renderAdaptations = task({
     const [{ data: allFormats }, { data: assets }, { data: project }] = await Promise.all([
       supabase.from("adstudio_formats").select("*").eq("project_id", payload.projectId),
       supabase.from("adstudio_assets").select("*").eq("project_id", payload.projectId),
-      supabase.from("adstudio_projects").select("cliente, producto, psd_height").eq("id", payload.projectId).single(),
+      supabase
+        .from("adstudio_projects")
+        .select("cliente, producto, psd_width, psd_height")
+        .eq("id", payload.projectId)
+        .single(),
     ]);
 
     if (!project) {
@@ -240,6 +244,7 @@ export const renderAdaptations = task({
               fontBuffer,
               fontName,
               sourceFontSize: meta?.fontSize ?? 100,
+              sourcePsdWidth: project.psd_width ?? masterEntry.spec.ancho,
               sourcePsdHeight: project.psd_height ?? masterEntry.spec.alto,
               targetWidth: spec.ancho,
               targetHeight: spec.alto,
