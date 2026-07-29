@@ -102,10 +102,12 @@ export async function renderTextAsPng(opts: TextRenderOptions): Promise<Buffer> 
     if (!registeredFontFamilies.has(familyName)) {
       registerFont(tmpFontPath, { family: familyName });
       registeredFontFamilies.add(familyName);
+      console.log("Font registered successfully:", familyName);
     }
-  } catch {
+  } catch (err) {
     // Si el registro falla (formato no soportado, ya registrada, etc.),
     // continúa: canvas cae a la fuente por defecto en vez de reventar el render.
+    console.error("Font registration error:", familyName, err);
   }
 
   // 4. Crear canvas y renderizar texto. El archivo temporal se borra DESPUÉS
@@ -142,6 +144,24 @@ export async function renderTextAsPng(opts: TextRenderOptions): Promise<Buffer> 
   lines.forEach((line, i) => {
     ctx.fillText(line, 0, i * lineHeight);
   });
+
+  // node-canvas en Linux (Trigger.dev) a veces no puede rasterizar una fuente
+  // TTF custom y la renderiza como tofu (glifos vacíos) sin lanzar error — se
+  // detecta comprobando si algún pixel no-alpha tiene contenido real; si no,
+  // se re-renderiza con la fuente del sistema para que el texto sea legible.
+  const imageData = ctx.getImageData(0, 0, areaWidth, areaHeight);
+  const hasContent = imageData.data.some((val, i) => i % 4 !== 3 && val > 0);
+
+  if (!hasContent) {
+    console.warn("Font rendered as tofu, falling back to system font:", familyName);
+    ctx.clearRect(0, 0, areaWidth, areaHeight);
+    ctx.fillStyle = opts.textColor ?? "#FFFFFF";
+    ctx.textBaseline = "top";
+    ctx.font = `bold ${finalFontSize}px sans-serif`;
+    lines.forEach((line, i) => {
+      ctx.fillText(line, 0, i * lineHeight);
+    });
+  }
 
   const buffer = canvas.toBuffer("image/png");
 

@@ -271,10 +271,14 @@ export const renderAdaptations = task({
         );
 
         console.log(`Formato ${n}/${total}: refinando con feedback visual...`);
+        // Desactivado temporalmente (maxIterations: 0) — el loop de feedback
+        // visual tiene un bug pendiente de arreglar. El código queda intacto
+        // para reactivarlo subiendo maxIterations cuando esté resuelto.
         const refinedHtml = await refineHtml5WithVisualFeedback(
           adaptedHtml,
           { width: spec.ancho, height: spec.alto, iabFormat: format.iab_format },
           formatAssetBuffers,
+          0,
         );
 
         console.log(`Formato ${n}/${total}: componiendo fallback.jpg...`);
