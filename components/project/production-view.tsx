@@ -159,6 +159,16 @@ export function ProductionView({
                   <span className="ml-auto text-xs text-muted-foreground">
                     {f.width}×{f.height}
                   </span>
+                  {f.level === "nivel2" && f.status === "ready" && (
+                    <Button
+                      variant="link"
+                      size="sm"
+                      className="h-auto p-0 text-xs"
+                      onClick={() => router.push(`/project/${projectId}/production/${f.id}`)}
+                    >
+                      Revisar borrador
+                    </Button>
+                  )}
                 </li>
               ))}
             </ul>

@@ -4,14 +4,14 @@ import { createTriggerSupabaseClient } from "@/lib/supabase/trigger-client";
 import { getIABFormatById, type IABFormat } from "@/lib/iab/specs";
 import { unblockedFormats } from "@/lib/iab/incident-analyzer";
 import { downloadAsset, pickLargestBy } from "@/lib/render/assets";
-import { adaptHtml5WithVision, refineHtml5WithVisualFeedback } from "@/lib/render/html5-generator";
+import { adaptHtml5WithVision } from "@/lib/render/html5-generator";
 import { getHtml5Master } from "@/lib/render/html5-cache";
 import { renderHtmlToImage } from "@/lib/render/browserless-renderer";
 import { adaptImageAsset } from "@/lib/render/replicate-outpainting";
 import { renderFallbackFromFrame } from "@/lib/render/fallback-composite";
 import { exportBufferFor, exportFilenameFor } from "@/lib/render/export-format";
-import { resolveProjectFont } from "@/lib/render/font-resolver";
-import { renderTextAsPng } from "@/lib/render/text-png-renderer";
+import { classifyFormat } from "@/lib/render/format-level";
+import { generateNivel1Adaptation } from "@/lib/render/geometric-scale-adaptation";
 import {
   buildManifestJson,
   buildZipBuffer,
@@ -63,11 +63,7 @@ export const renderAdaptations = task({
     const [{ data: allFormats }, { data: assets }, { data: project }] = await Promise.all([
       supabase.from("adstudio_formats").select("*").eq("project_id", payload.projectId),
       supabase.from("adstudio_assets").select("*").eq("project_id", payload.projectId),
-      supabase
-        .from("adstudio_projects")
-        .select("cliente, producto, psd_width, psd_height")
-        .eq("id", payload.projectId)
-        .single(),
+      supabase.from("adstudio_projects").select("cliente, producto").eq("id", payload.projectId).single(),
     ]);
 
     if (!project) {
@@ -195,110 +191,84 @@ export const renderAdaptations = task({
       await supabase.from("adstudio_formats").update({ status: "producing" }).eq("id", format.id);
 
       try {
-        console.log(`Formato ${n}/${total}: reencuadrando assets con FLUX Kontext...`);
+        // Nivel 1 (ratio parecido al master): escalado geométrico puro, sin
+        // Claude ni FLUX — determinista y siempre disponible. Nivel 2 (ratio
+        // muy distinto): pipeline completo de FLUX Kontext + Claude Vision,
+        // cuyo resultado se guarda además como borrador revisable por chat
+        // (ver lib/adaptation-refine.ts) antes de darlo por definitivo.
+        const level = classifyFormat(masterEntry.spec.ancho, masterEntry.spec.alto, spec.ancho, spec.alto);
+        console.log(`Formato ${n}/${total}: nivel ${level}`);
 
         // Clon por formato: los buffers adaptados no deben filtrarse al resto
         // de formatos ni al Map global (assetBuffers).
         const formatAssetBuffers = new Map(assetBuffers);
         // asset.id -> PNG ya adaptado, para renderFallbackFromFrame (evita
-        // descargar de Storage el original para estas capas).
+        // descargar de Storage el original para estas capas). Nivel 1 no
+        // reencuadra con FLUX, así que se deja vacío (renderFallbackFromFrame
+        // cae a descargar los PNG originales del master).
         const fallbackOverrides = new Map<string, Buffer>();
 
-        for (let cropIndex = 0; cropIndex < cropTargets.length; cropIndex++) {
-          const asset = cropTargets[cropIndex];
+        let finalHtml: string;
 
-          // Espaciar llamadas a Replicate cuando hay más de un cropTarget en
-          // este formato — evita el rate limiting de la API de Replicate.
-          if (cropIndex > 0) {
-            await sleep(10_000);
+        if (level === "nivel1") {
+          console.log(`Formato ${n}/${total}: escalado geométrico (Nivel 1)...`);
+          const nivel1 = await generateNivel1Adaptation(
+            payload.projectId,
+            masterHtml,
+            { width: masterEntry.spec.ancho, height: masterEntry.spec.alto },
+            { width: spec.ancho, height: spec.alto },
+            allAssets,
+            assetBuffers,
+          );
+          for (const [filename, buffer] of nivel1.assetBuffers) {
+            formatAssetBuffers.set(filename, buffer);
+          }
+          finalHtml = nivel1.html;
+        } else {
+          console.log(`Formato ${n}/${total}: reencuadrando assets con FLUX Kontext (Nivel 2)...`);
+
+          for (let cropIndex = 0; cropIndex < cropTargets.length; cropIndex++) {
+            const asset = cropTargets[cropIndex];
+
+            // Espaciar llamadas a Replicate cuando hay más de un cropTarget en
+            // este formato — evita el rate limiting de la API de Replicate.
+            if (cropIndex > 0) {
+              await sleep(10_000);
+            }
+
+            const pngFilename = assetFilename(asset);
+            if (!pngFilename || !asset.file_path) continue;
+
+            // Siempre desde el PNG original en Storage (nunca del buffer ya
+            // convertido a JPG en assetBuffers) — adaptImageAsset asume PNG.
+            const originalBuffer = await downloadAsset(supabase, asset.file_path);
+            if (!originalBuffer) continue;
+
+            const { width: srcWidth, height: srcHeight } = await sharp(originalBuffer).metadata();
+            if (!srcWidth || !srcHeight) continue;
+
+            const adaptedPng = await adaptImageAsset(originalBuffer, srcWidth, srcHeight, spec.ancho, spec.alto);
+            const adaptedExported = await exportBufferFor(adaptedPng, !!asset.export_as_jpg);
+
+            formatAssetBuffers.set(exportFilenameFor(pngFilename, !!asset.export_as_jpg), adaptedExported);
+            fallbackOverrides.set(asset.id, adaptedPng);
           }
 
-          const pngFilename = assetFilename(asset);
-          if (!pngFilename || !asset.file_path) continue;
+          // Verificación: formatAssetBuffers debe incluir el fondo/imagen_principal
+          // ya reencuadrado con FLUX (sobreescrito arriba) — un filename ausente
+          // aquí es la causa típica de un ZIP sin imagen de fondo para ese formato.
+          console.log("Assets en ZIP para", format.iab_format, ":", Array.from(formatAssetBuffers.keys()));
 
-          // Siempre desde el PNG original en Storage (nunca del buffer ya
-          // convertido a JPG en assetBuffers) — adaptImageAsset asume PNG.
-          const originalBuffer = await downloadAsset(supabase, asset.file_path);
-          if (!originalBuffer) continue;
-
-          const { width: srcWidth, height: srcHeight } = await sharp(originalBuffer).metadata();
-          if (!srcWidth || !srcHeight) continue;
-
-          const adaptedPng = await adaptImageAsset(originalBuffer, srcWidth, srcHeight, spec.ancho, spec.alto);
-          const adaptedExported = await exportBufferFor(adaptedPng, !!asset.export_as_jpg);
-
-          formatAssetBuffers.set(exportFilenameFor(pngFilename, !!asset.export_as_jpg), adaptedExported);
-          fallbackOverrides.set(asset.id, adaptedPng);
+          console.log(`Formato ${n}/${total}: generando HTML5...`);
+          finalHtml = await adaptHtml5WithVision(
+            masterHtml,
+            masterRendered!,
+            { width: masterEntry.spec.ancho, height: masterEntry.spec.alto },
+            allAssets,
+            formatAssetBuffers,
+            { width: spec.ancho, height: spec.alto, iabFormat: format.iab_format },
+          );
         }
-
-        // Tipografías custom del cliente (adstudio_assets.layer_type='font',
-        // ver components/project/upload-zones.tsx): si hay una fuente propia
-        // resuelta para esta capa de texto, se re-renderiza su PNG escalado
-        // al formato destino en vez de reutilizar el PNG del master tal cual.
-        // Solo sustituye formatAssetBuffers (lo que ve Claude Vision y lo que
-        // se empaqueta en el ZIP de esta pieza) — el fallback.jpg sigue
-        // componiéndose con el PNG original del master (renderFallbackFromFrame
-        // usa los layer_bounds del master tal cual, sin reescalar).
-        const textAssets = allAssets.filter(
-          (a) => !a.discarded && a.classification === "texto" && (a.text_content ?? "").trim(),
-        );
-
-        for (const asset of textAssets) {
-          const pngFilename = assetFilename(asset);
-          const meta = asset.metadata as TextLayerMetadata | undefined;
-          const fontName = meta?.fontName;
-          if (!pngFilename || !fontName || !asset.layer_bounds) continue;
-
-          try {
-            const fontBuffer = await resolveProjectFont(payload.projectId, fontName, supabase);
-            if (!fontBuffer) continue;
-
-            const textPng = await renderTextAsPng({
-              text: asset.text_content ?? "",
-              fontBuffer,
-              fontName,
-              sourceFontSize: meta?.fontSize ?? 100,
-              sourcePsdWidth: project.psd_width ?? masterEntry.spec.ancho,
-              sourcePsdHeight: project.psd_height ?? masterEntry.spec.alto,
-              targetWidth: spec.ancho,
-              targetHeight: spec.alto,
-              sourceLayerBounds: asset.layer_bounds,
-              textColor: meta?.textColor ?? undefined,
-            });
-
-            formatAssetBuffers.set(exportFilenameFor(pngFilename, !!asset.export_as_jpg), textPng);
-          } catch (textError) {
-            // Un fallo renderizando una capa de texto no debe tirar abajo el
-            // formato completo — se mantiene el PNG del master para esa capa.
-            console.error(`No se pudo renderizar texto custom para "${asset.layer_name}":`, textError);
-          }
-        }
-
-        // Verificación: formatAssetBuffers debe incluir el fondo/imagen_principal
-        // ya reencuadrado con FLUX (sobreescrito arriba) — un filename ausente
-        // aquí es la causa típica de un ZIP sin imagen de fondo para ese formato.
-        console.log("Assets en ZIP para", format.iab_format, ":", Array.from(formatAssetBuffers.keys()));
-
-        console.log(`Formato ${n}/${total}: generando HTML5...`);
-        const adaptedHtml = await adaptHtml5WithVision(
-          masterHtml,
-          masterRendered!,
-          { width: masterEntry.spec.ancho, height: masterEntry.spec.alto },
-          allAssets,
-          formatAssetBuffers,
-          { width: spec.ancho, height: spec.alto, iabFormat: format.iab_format },
-        );
-
-        console.log(`Formato ${n}/${total}: refinando con feedback visual...`);
-        // Desactivado temporalmente (maxIterations: 0) — el loop de feedback
-        // visual tiene un bug pendiente de arreglar. El código queda intacto
-        // para reactivarlo subiendo maxIterations cuando esté resuelto.
-        const refinedHtml = await refineHtml5WithVisualFeedback(
-          adaptedHtml,
-          { width: spec.ancho, height: spec.alto, iabFormat: format.iab_format },
-          formatAssetBuffers,
-          0,
-        );
 
         console.log(`Formato ${n}/${total}: componiendo fallback.jpg...`);
         const fallbackJpg = await renderFallbackFromFrame(
@@ -314,11 +284,32 @@ export const renderAdaptations = task({
         await Promise.all([
           supabase.storage
             .from("adstudio-projects")
-            .upload(`${basePath}/index.html`, refinedHtml, { contentType: "text/html", upsert: true }),
+            .upload(`${basePath}/index.html`, finalHtml, { contentType: "text/html", upsert: true }),
           supabase.storage
             .from("adstudio-projects")
             .upload(`${basePath}/fallback.jpg`, fallbackJpg, { contentType: "image/jpeg", upsert: true }),
         ]);
+
+        // Nivel 2 — "master secundario": el HTML se guarda también en
+        // adstudio_masters (status='draft') para poder revisarlo y pedir
+        // cambios por chat (lib/adaptation-refine.ts) desde
+        // app/project/[id]/production/[formatId] antes de la entrega final.
+        // Nivel 1 no lo necesita: es determinista y no se revisa por chat.
+        if (level === "nivel2") {
+          await supabase.from("adstudio_masters").upsert(
+            {
+              project_id: payload.projectId,
+              format_id: format.id,
+              iab_format: format.iab_format,
+              width: spec.ancho,
+              height: spec.alto,
+              jpg_path: `${basePath}/fallback.jpg`,
+              html: finalHtml,
+              status: "draft",
+            },
+            { onConflict: "project_id,iab_format" },
+          );
+        }
 
         // "ready" (no "producido"): es el valor de FormatStatus que ya
         // consume el resto de la UI (p. ej. production-view.tsx cuenta
@@ -351,7 +342,7 @@ export const renderAdaptations = task({
 
         const pieceFolders = pieceFoldersFor(format);
         for (const pieceFolder of pieceFolders) {
-          zipEntries.push({ path: `${pieceFolder}/index.html`, content: refinedHtml });
+          zipEntries.push({ path: `${pieceFolder}/index.html`, content: finalHtml });
           for (const png of formatPngEntries) {
             zipEntries.push({ path: `${pieceFolder}/${png.filename}`, content: png.buffer });
           }
@@ -364,7 +355,7 @@ export const renderAdaptations = task({
           width: spec.ancho,
           height: spec.alto,
           jpgSizeBytes: fallbackJpg.byteLength,
-          htmlSizeBytes: Buffer.byteLength(refinedHtml, "utf8"),
+          htmlSizeBytes: Buffer.byteLength(finalHtml, "utf8"),
           incidencias: format.incidencias ?? [],
           soportes: format.soportes ?? [],
         });

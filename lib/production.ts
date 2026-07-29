@@ -2,6 +2,8 @@ import { tasks } from "@trigger.dev/sdk/v3";
 import { createSessionSupabaseClient } from "@/lib/supabase/server-session";
 import { getIABFormatById } from "@/lib/iab/specs";
 import { deriveFormatStatus } from "@/lib/iab/incident-analyzer";
+import { classifyFormat, type FormatLevel } from "@/lib/render/format-level";
+import { rankFormatsByArea } from "@/lib/master";
 import type { FormatStatus, Project, ProjectFormat } from "@/lib/types";
 
 export type TriggerProductionResult =
@@ -47,6 +49,8 @@ export type ProductionFormatStatus = {
   width: number | null;
   height: number | null;
   status: FormatStatus | "blocked";
+  /** null para el propio master o formatos con PSD propio (no pasan por el clasificador Nivel 1/2, ver trigger/render-adaptations.ts). */
+  level: FormatLevel | null;
 };
 
 export type ProductionStatusResponse = {
@@ -70,10 +74,27 @@ export async function getProductionStatus(projectId: string): Promise<Production
   if (projectError || !project) return null;
 
   const { data: formats } = await supabase.from("adstudio_formats").select("*").eq("project_id", projectId);
+  const allFormats = (formats ?? []) as ProjectFormat[];
 
-  const formatsWithStatus: ProductionFormatStatus[] = ((formats ?? []) as ProjectFormat[]).map((format) => {
+  // Mismo criterio que trigger/render-adaptations.ts/lib/master.ts: el
+  // formato marcado explícitamente como master, o el de mayor área si ninguno
+  // lo está — referencia para clasificar el resto en Nivel 1/Nivel 2 (ver
+  // lib/render/format-level.ts).
+  const masterFormat =
+    allFormats.find((f) => f.is_master) ?? rankFormatsByArea(allFormats)[0]?.format ?? null;
+  const masterSpec = masterFormat ? getIABFormatById(masterFormat.iab_format) : null;
+
+  const formatsWithStatus: ProductionFormatStatus[] = allFormats.map((format) => {
     const spec = getIABFormatById(format.iab_format);
     const blocked = deriveFormatStatus(format.incidencias ?? []) === "blocked";
+
+    // El propio master y los formatos con PSD propio no pasan por el
+    // clasificador Nivel 1/2 — no se adaptan desde el master.
+    const level: FormatLevel | null =
+      masterSpec && spec && format.id !== masterFormat?.id && !format.source_psd_id
+        ? classifyFormat(masterSpec.ancho, masterSpec.alto, spec.ancho, spec.alto)
+        : null;
+
     return {
       id: format.id,
       nombreSoporte: format.nombre_soporte,
@@ -81,6 +102,7 @@ export async function getProductionStatus(projectId: string): Promise<Production
       width: spec?.ancho ?? null,
       height: spec?.alto ?? null,
       status: blocked ? "blocked" : format.status,
+      level,
     };
   });
 

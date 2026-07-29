@@ -231,3 +231,23 @@ ALTER TABLE adstudio_masters
 -- uno nuevo) — ver lib/approval.ts:getApprovalStatus.
 ALTER TABLE adstudio_approval_tokens
   ADD COLUMN IF NOT EXISTS created_at timestamptz NOT NULL DEFAULT now();
+
+-- =========================================================
+-- Bloque 13 — Nivel 1 (escalado geométrico) / Nivel 2 (borrador + chat)
+-- =========================================================
+
+-- Formatos clasificados como Nivel 2 (ratio muy distinto al master, ver
+-- trigger/render-adaptations.ts:classifyFormat) guardan su HTML5 adaptado
+-- como un "master secundario" en adstudio_masters (status='draft') para poder
+-- refinarlo con el chat de cambios (lib/adaptation-refine.ts) antes de la
+-- entrega final — igual que el master principal, pero por formato.
+ALTER TABLE adstudio_masters
+  ADD COLUMN IF NOT EXISTS html text DEFAULT NULL,
+  ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'ready';
+ALTER TABLE adstudio_masters ALTER COLUMN jpg_path DROP NOT NULL;
+ALTER TABLE adstudio_masters ALTER COLUMN png_path DROP NOT NULL;
+
+-- Permite que un cambio del chat (adstudio_changes) se asocie a un formato
+-- concreto (adaptación Nivel 2) en vez de al proyecto/master principal.
+ALTER TABLE adstudio_changes
+  ADD COLUMN IF NOT EXISTS format_id uuid DEFAULT NULL REFERENCES adstudio_formats(id) ON DELETE CASCADE;

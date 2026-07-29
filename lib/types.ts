@@ -178,6 +178,8 @@ export type ProjectChange = {
   formats_affected: string[];
   requested_at: string;
   status: ChangeStatus;
+  /** Formato (adaptación Nivel 2) al que aplica este cambio — null si es sobre el master principal. Ver lib/adaptation-refine.ts. */
+  format_id: string | null;
 };
 
 export type ApprovalToken = {
@@ -202,6 +204,10 @@ export type MasterRecord = {
   /** Formato del que proviene este master cuando el proyecto tiene varios PSDs (uno por PSD) — ver trigger/render-master.ts. */
   format_id: string | null;
   created_at: string;
+  /** HTML5 del borrador de adaptación Nivel 2 (ver lib/adaptation-refine.ts) — null en masters "normales" (Nivel 1 o master principal). */
+  html: string | null;
+  /** 'draft' = adaptación Nivel 2 pendiente de refinar por chat; 'ready' = master normal, ya no se toca aquí. */
+  status: "draft" | "ready";
 };
 
 export type Subscription = {

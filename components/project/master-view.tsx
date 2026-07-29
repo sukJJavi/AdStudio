@@ -3,8 +3,8 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { Html5ChangeChat } from "@/components/project/html5-change-chat";
 import { cn } from "@/lib/utils";
 import type { MasterChangeEntry, MasterStatusResponse } from "@/lib/master";
 
@@ -60,10 +60,6 @@ export function MasterView({
   const [origin, setOrigin] = useState<string | null>(null);
   useEffect(() => setOrigin(window.location.origin), []);
 
-  const [changeText, setChangeText] = useState("");
-  const [changes, setChanges] = useState<MasterChangeEntry[]>(initialChanges);
-  const [applyingChange, setApplyingChange] = useState(false);
-  const [changeError, setChangeError] = useState<string | null>(null);
   const [previewNonce, setPreviewNonce] = useState(0);
 
   const isGenerating = status.projectStatus === "master_generating";
@@ -194,38 +190,6 @@ export function MasterView({
       setTimeout(() => setApprovalCopied(false), 3000);
     } catch {
       // Best-effort: si falla el clipboard, el usuario puede seleccionar el texto a mano.
-    }
-  }
-
-  async function handleApplyChange() {
-    if (!changeText.trim()) return;
-
-    setApplyingChange(true);
-    setChangeError(null);
-
-    try {
-      const res = await fetch("/api/master/refine", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId, changeDescription: changeText.trim() }),
-      });
-      const data = await res.json();
-
-      if (!res.ok) {
-        setChangeError(data.error ?? "No se pudo aplicar el cambio.");
-        return;
-      }
-
-      setChanges((prev) => [data.change as MasterChangeEntry, ...prev]);
-      setChangeText("");
-      // El iframe apunta siempre a /api/preview/[projectId] — el HTML ya se
-      // actualizó en el servidor, así que solo hace falta forzar que el
-      // navegador vuelva a pedirlo en vez de servir la copia cacheada.
-      setPreviewNonce((n) => n + 1);
-    } catch {
-      setChangeError("Error de red al aplicar el cambio.");
-    } finally {
-      setApplyingChange(false);
     }
   }
 
@@ -444,47 +408,18 @@ export function MasterView({
             </Card>
 
             {status.hasHtml5 && (
-              <Card className="border-[#232935] bg-[#12161F]">
-                <CardHeader>
-                  <CardTitle className="font-display">Solicitar cambio</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <Textarea
-                    placeholder={
-                      'Describe el cambio que quieres aplicar...\n' +
-                      'Ej: "El background se mueve demasiado rápido, ponlo a 1.2s"\n' +
-                      'Ej: "El texto del frame 2 debería aparecer 500ms más tarde"\n' +
-                      'Ej: "El CTA debería quedarse visible en el último frame"'
-                    }
-                    value={changeText}
-                    onChange={(e) => setChangeText(e.target.value)}
-                    rows={4}
-                    className="border-[#2E3644] bg-[#12161F] focus-visible:border-[#2E80FF]"
-                  />
-                  <Button onClick={handleApplyChange} disabled={applyingChange || !changeText.trim() || regeneratingMaster}>
-                    {applyingChange ? "Aplicando..." : "Aplicar cambio"}
-                  </Button>
-                  {changeError && <p className="text-sm text-destructive">{changeError}</p>}
-
-                  {changes.length > 0 && (
-                    <div className="space-y-2 pt-2">
-                      <p className="font-mono text-xs uppercase tracking-wide text-[#5D6675]">
-                        Historial de cambios
-                      </p>
-                      <ul className="space-y-1.5">
-                        {changes.map((change) => (
-                          <li key={change.id} className="rounded-md border border-[#232935] bg-[#171C27] p-2 text-xs">
-                            <p className="text-[#34C759]">{change.description}</p>
-                            <p className="font-mono text-[#5D6675]">
-                              {new Date(change.requestedAt).toLocaleString()}
-                            </p>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                </CardContent>
-              </Card>
+              <Html5ChangeChat
+                projectId={projectId}
+                endpoint="/api/master/refine"
+                initialChanges={initialChanges}
+                disabled={regeneratingMaster}
+                onApplied={() => {
+                  // El iframe apunta siempre a /api/preview/[projectId] — el HTML ya
+                  // se actualizó en el servidor, así que solo hace falta forzar que
+                  // el navegador vuelva a pedirlo en vez de servir la copia cacheada.
+                  setPreviewNonce((n) => n + 1);
+                }}
+              />
             )}
           </div>
 

@@ -80,8 +80,12 @@ function usableAssetDescriptors(assets: ProjectAsset[]): Html5AssetDescriptor[] 
     });
 }
 
-/** Quita el fence ```html ... ``` si Claude lo añade a pesar de la instrucción de no hacerlo. */
-function stripCodeFence(text: string): string {
+/**
+ * Quita el fence ```html ... ``` si Claude lo añade a pesar de la instrucción
+ * de no hacerlo. Exportado: lo reutiliza lib/adaptation-refine.ts (chat de
+ * cambios sobre una adaptación, "hermana" de lib/master.ts:refineMasterHtml).
+ */
+export function stripCodeFence(text: string): string {
   const trimmed = text.trim();
   const fenced = trimmed.match(/^```(?:html)?\s*([\s\S]*?)\s*```$/i);
   return (fenced ? fenced[1] : trimmed).trim();
@@ -92,7 +96,7 @@ function stripCodeFence(text: string): string {
  * pide, pero no hay forma de asegurar el cumplimiento de un LLM) — añade
  * `border`/`box-sizing` a la regla `#ad { ... }` solo si no están ya presentes.
  */
-function ensureAdBorder(html: string): string {
+export function ensureAdBorder(html: string): string {
   return html.replace(/(#ad\s*\{)([^}]*)(\})/i, (_match, open: string, body: string, close: string) => {
     let updatedBody = body;
     if (!/border\s*:/i.test(updatedBody)) updatedBody += " border: 1px solid #000000;";
@@ -106,7 +110,7 @@ function ensureAdBorder(html: string): string {
  * del prompt (p.ej. `#ad img { width: 100%; height: 100% }`): sobrescriben el
  * posicionamiento absoluto en px de cada capa individual y rompen el layout.
  */
-function sanitizeHtml(html: string): string {
+export function sanitizeHtml(html: string): string {
   return html
     .replace(/#ad\s+img\s*\{[^}]*width\s*:\s*100%[^}]*\}/gi, "")
     .replace(/#ad\s+img\s*\{[^}]*height\s*:\s*100%[^}]*\}/gi, "")

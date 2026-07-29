@@ -175,8 +175,10 @@ create table if not exists adstudio_masters (
   id uuid primary key default gen_random_uuid(),
   project_id uuid not null references adstudio_projects(id) on delete cascade,
   iab_format text not null,
-  jpg_path text not null,
-  png_path text not null,
+  -- Nullable: un borrador de adaptación Nivel 2 (ver Bloque 13) se guarda aquí
+  -- con status='draft' antes de tener jpg/png renderizados.
+  jpg_path text,
+  png_path text,
   width integer not null,
   height integer not null,
   jpg_size_bytes integer,
@@ -185,10 +187,19 @@ create table if not exists adstudio_masters (
   unique (project_id, iab_format),
   -- Bloque 11: formato del que proviene este master cuando el proyecto tiene
   -- varios masters (uno por PSD) — permite localizarlo directamente.
-  format_id uuid default null references adstudio_formats(id) on delete set null
+  format_id uuid default null references adstudio_formats(id) on delete set null,
+  -- Bloque 13: HTML5 del borrador de adaptación Nivel 2 (chat de cambios, ver
+  -- lib/adaptation-refine.ts) y su estado — 'draft' no debe listarse como
+  -- master/variante en app/project/[id]/master (ver lib/master.ts:getMasterStatus).
+  html text default null,
+  status text not null default 'ready'
 );
 
 alter table adstudio_masters add column if not exists format_id uuid default null references adstudio_formats(id) on delete set null;
+alter table adstudio_masters add column if not exists html text default null;
+alter table adstudio_masters add column if not exists status text not null default 'ready';
+alter table adstudio_masters alter column jpg_path drop not null;
+alter table adstudio_masters alter column png_path drop not null;
 
 create table if not exists adstudio_changes (
   id uuid primary key default gen_random_uuid(),
@@ -197,8 +208,14 @@ create table if not exists adstudio_changes (
   description text,
   formats_affected jsonb not null default '[]',
   requested_at timestamptz not null default now(),
-  status text not null default 'pending'
+  status text not null default 'pending',
+  -- Bloque 13: chat de cambios sobre un borrador de adaptación concreto (ver
+  -- lib/adaptation-refine.ts) — null cuando el cambio es sobre el master
+  -- principal (adstudio_projects.master_html, ver lib/master.ts).
+  format_id uuid default null references adstudio_formats(id) on delete cascade
 );
+
+alter table adstudio_changes add column if not exists format_id uuid default null references adstudio_formats(id) on delete cascade;
 
 create table if not exists adstudio_approval_tokens (
   id uuid primary key default gen_random_uuid(),

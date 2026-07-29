@@ -136,10 +136,15 @@ export async function getMasterStatus(projectId: string): Promise<MasterStatusRe
 
   if (projectError || !project) return null;
 
+  // Excluye los borradores de adaptación Nivel 2 (status='draft', ver
+  // trigger/render-adaptations.ts y lib/adaptation-refine.ts) — comparten esta
+  // misma tabla pero no son masters/variantes del proyecto, así que no deben
+  // listarse aquí.
   const { data: masterRows } = await supabase
     .from("adstudio_masters")
     .select("*")
     .eq("project_id", projectId)
+    .neq("status", "draft")
     .order("created_at", { ascending: false });
 
   const masters: MasterWithUrls[] = await Promise.all(
@@ -193,15 +198,20 @@ export async function getMasterStatus(projectId: string): Promise<MasterStatusRe
   };
 }
 
-/** Rondas de cambios disponibles por tier — ver "Tiers y límites" en CLAUDE.md. `null` = ilimitado. */
-const TIER_ROUNDS_LIMIT: Record<Tier, number | null> = {
+/**
+ * Rondas de cambios disponibles por tier — ver "Tiers y límites" en CLAUDE.md.
+ * `null` = ilimitado. Exportado para reutilizarse también en
+ * lib/adaptation-refine.ts (mismo chat de cambios, aplicado a una adaptación
+ * concreta en vez de al master principal).
+ */
+export const TIER_ROUNDS_LIMIT: Record<Tier, number | null> = {
   starter: 1,
   studio: 3,
   agency: null,
 };
 
 /** Tipos de cambio permitidos por tier — ver "Tipos de cambio" en CLAUDE.md. */
-const TIER_ALLOWED_CHANGE_TYPES: Record<Tier, ChangeType[]> = {
+export const TIER_ALLOWED_CHANGE_TYPES: Record<Tier, ChangeType[]> = {
   starter: ["A", "B"],
   studio: ["A", "B", "C"],
   agency: ["A", "B", "C", "D", "E"],
@@ -210,7 +220,7 @@ const TIER_ALLOWED_CHANGE_TYPES: Record<Tier, ChangeType[]> = {
 /** El chat de cambios sobre el master (app/api/master/refine) siempre es un cambio tipo C (revisión de master). */
 const REFINE_CHANGE_TYPE: ChangeType = "C";
 
-const REFINE_SYSTEM_PROMPT = `Eres un experto en producción de publicidad digital HTML5.
+export const REFINE_SYSTEM_PROMPT = `Eres un experto en producción de publicidad digital HTML5.
 Recibes el código HTML5 de un banner publicitario y una descripción de un cambio a aplicar.
 Devuelve SOLO el HTML completo modificado, sin explicaciones, sin markdown, comenzando con <!doctype html>.
 Modifica ÚNICAMENTE lo que se pide. No cambies nada más.`;
