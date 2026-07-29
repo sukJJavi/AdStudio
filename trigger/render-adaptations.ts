@@ -8,7 +8,7 @@ import { adaptHtml5WithVision } from "@/lib/render/html5-generator";
 import { getHtml5Master } from "@/lib/render/html5-cache";
 import { renderHtmlToImage } from "@/lib/render/browserless-renderer";
 import { adaptImageAsset } from "@/lib/render/replicate-outpainting";
-import { renderFallbackFromFrame } from "@/lib/render/fallback-composite";
+import { renderAdaptationFallbackJpg } from "@/lib/render/adaptation-fallback";
 import { exportBufferFor, exportFilenameFor } from "@/lib/render/export-format";
 import { classifyFormat } from "@/lib/render/format-level";
 import { generateNivel1Adaptation } from "@/lib/render/geometric-scale-adaptation";
@@ -202,11 +202,6 @@ export const renderAdaptations = task({
         // Clon por formato: los buffers adaptados no deben filtrarse al resto
         // de formatos ni al Map global (assetBuffers).
         const formatAssetBuffers = new Map(assetBuffers);
-        // asset.id -> PNG ya adaptado, para renderFallbackFromFrame (evita
-        // descargar de Storage el original para estas capas). Nivel 1 no
-        // reencuadra con FLUX, así que se deja vacío (renderFallbackFromFrame
-        // cae a descargar los PNG originales del master).
-        const fallbackOverrides = new Map<string, Buffer>();
 
         let finalHtml: string;
 
@@ -251,7 +246,6 @@ export const renderAdaptations = task({
             const adaptedExported = await exportBufferFor(adaptedPng, !!asset.export_as_jpg);
 
             formatAssetBuffers.set(exportFilenameFor(pngFilename, !!asset.export_as_jpg), adaptedExported);
-            fallbackOverrides.set(asset.id, adaptedPng);
           }
 
           // Verificación: formatAssetBuffers debe incluir el fondo/imagen_principal
@@ -270,13 +264,15 @@ export const renderAdaptations = task({
           );
         }
 
-        console.log(`Formato ${n}/${total}: componiendo fallback.jpg...`);
-        const fallbackJpg = await renderFallbackFromFrame(
-          payload.projectId,
+        console.log(`Formato ${n}/${total}: renderizando fallback.jpg (screenshot real del HTML)...`);
+        // El fallback ya no se compone manualmente con Sharp: es un screenshot
+        // real del HTML final (Nivel 1 o Nivel 2) vía Browserless, así que
+        // coincide exactamente con la pieza entregada — ver
+        // lib/render/adaptation-fallback.ts.
+        const fallbackJpg = await renderAdaptationFallbackJpg(
+          finalHtml,
           { width: spec.ancho, height: spec.alto },
-          allAssets,
-          supabase,
-          fallbackOverrides,
+          formatAssetBuffers,
         );
 
         const basePath = `${payload.projectId}/adaptations/${format.iab_format}`;

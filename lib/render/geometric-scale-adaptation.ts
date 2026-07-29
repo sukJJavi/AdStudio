@@ -9,6 +9,10 @@ function assetFilename(asset: ProjectAsset): string | null {
   return typeof filename === "string" && filename.trim() ? filename : null;
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
  * Reescala en el propio CSS las reglas `top`/`left`/`width`/`height` en px de
  * cada selector del bloque `<style>`, multiplicando por el factor de escala
@@ -22,6 +26,53 @@ function scaleCssRules(css: string, scaleX: number, scaleY: number): string {
     .replace(/\b(left|width)\s*:\s*(-?\d+(?:\.\d+)?)px/gi, (_match, prop: string, value: string) => {
       return `${prop}: ${Math.round(parseFloat(value) * scaleX)}px`;
     });
+}
+
+/** `object-fit` según classification: fondo/imagen_principal rellenan recortando (cover), el resto nunca se deforma (contain). */
+function objectFitFor(classification: string | null): "cover" | "contain" {
+  return classification && BACKGROUND_CLASSIFICATIONS.has(classification) ? "cover" : "contain";
+}
+
+/**
+ * El escalado geométrico (scaleCssRules) cambia el ratio del contenedor de
+ * cada asset sin tocar el PNG en sí — un PNG cuyo contenido fue pensado para
+ * el ratio del master se deforma si su caja pasa a tener un ratio distinto.
+ * Añade `object-fit` a la regla CSS del selector de cada `<img>` (localizado
+ * por su `src`, que referencia el filename real del asset) según su
+ * classification: `cover` para fondo/imagen_principal (rellena recortando lo
+ * que sobre), `contain` para el resto (nunca deforma, aunque queden márgenes).
+ */
+function addObjectFitRules(html: string, assets: ProjectAsset[]): string {
+  let result = html;
+
+  for (const asset of assets) {
+    if (asset.discarded) continue;
+    const filename = assetFilename(asset);
+    if (!filename) continue;
+
+    // El HTML puede referenciar el .png original o su exportación a .jpg
+    // (export_as_jpg, ver lib/render/export-format.ts) — se busca cualquiera.
+    const filenameAlt = filename.toLowerCase().endsWith(".png")
+      ? filename.replace(/\.png$/i, ".jpg")
+      : filename.replace(/\.jpe?g$/i, ".png");
+
+    const imgTagMatch =
+      result.match(new RegExp(`<img[^>]*\\bsrc=["']${escapeRegExp(filename)}["'][^>]*>`, "i")) ??
+      result.match(new RegExp(`<img[^>]*\\bsrc=["']${escapeRegExp(filenameAlt)}["'][^>]*>`, "i"));
+
+    const id = imgTagMatch?.[0].match(/\bid=["']([^"']+)["']/i)?.[1];
+    if (!id) continue;
+
+    const objectFit = objectFitFor(asset.classification);
+    const ruleRegex = new RegExp(`(#${escapeRegExp(id)}\\s*\\{)([^}]*)(\\})`, "i");
+
+    result = result.replace(ruleRegex, (_match, open: string, body: string, close: string) => {
+      if (/object-fit\s*:/i.test(body)) return `${open}${body}${close}`;
+      return `${open}${body} object-fit: ${objectFit};${close}`;
+    });
+  }
+
+  return result;
 }
 
 /**
@@ -60,6 +111,11 @@ export async function generateNivel1Adaptation(
   html = html
     .replace(/(#ad\s*\{[^}]*?width\s*:\s*)-?\d+(?:\.\d+)?px/i, `$1${targetFormat.width}px`)
     .replace(/(#ad\s*\{[^}]*?height\s*:\s*)-?\d+(?:\.\d+)?px/i, `$1${targetFormat.height}px`);
+
+  // 2b. object-fit por asset — evita que un PNG pensado para el ratio del
+  // master se deforme cuando su caja pasa a tener el ratio del formato
+  // destino (ver addObjectFitRules).
+  html = addObjectFitRules(html, assets);
 
   // 3. Assets: se reutilizan tal cual, salvo fondo/imagen_principal, que se
   // reescala con Sharp (sin FLUX) al tamaño que le corresponde en el nuevo

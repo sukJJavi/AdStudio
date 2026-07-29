@@ -282,9 +282,11 @@ function parseVisualEvaluation(text: string): VisualEvaluation {
  * Sustituye los `src="filename"` del HTML por data URIs base64 a partir de
  * `assetBuffers` — necesario para renderizar con `page.setContent()`
  * (renderInlinedHtmlToImage), que no tiene origen público detrás y por tanto
- * no puede resolver rutas relativas a Storage.
+ * no puede resolver rutas relativas a Storage. Exportado: lo reutiliza
+ * trigger/render-adaptations.ts para el fallback.jpg (screenshot real del
+ * HTML final, ver lib/render/adaptation-fallback.ts).
  */
-function inlineAssetsAsDataUrls(html: string, assetBuffers: Map<string, Buffer>): string {
+export function inlineAssetsAsDataUrls(html: string, assetBuffers: Map<string, Buffer>): string {
   let inlined = html;
   for (const [filename, buffer] of assetBuffers) {
     const dataUrl = `data:${imageMediaTypeFor(filename)};base64,${buffer.toString("base64")}`;
