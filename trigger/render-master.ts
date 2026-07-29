@@ -191,7 +191,7 @@ async function renderOneMaster(params: {
   );
 
   // Con PSD propio (multi-PSD), este formato ya está producido — no pasa por
-  // trigger/render-adaptations.ts (ver BACKGROUND_CLASSIFICATIONS ahí).
+  // trigger/render-adaptations.ts (ver cropTargets ahí).
   if (format.source_psd_id) {
     await supabase.from("adstudio_formats").update({ status: "ready" }).eq("id", format.id);
   }

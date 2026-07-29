@@ -26,6 +26,10 @@ type RenderAdaptationsPayload = {
   projectId: string;
 };
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /** `adstudio_assets.metadata.filename` — nombre de fichero asignado en trigger/analyze-psd.ts. */
 function assetFilename(asset: ProjectAsset): string | null {
   const filename = (asset.metadata as TextLayerMetadata | undefined)?.filename;
@@ -37,13 +41,6 @@ function contentTypeForFilename(filename: string): string {
     ? "image/jpeg"
     : "image/png";
 }
-
-/**
- * Clasificaciones cuya capa se reencuadra por formato con FLUX Kontext
- * (lib/render/replicate-outpainting.ts:adaptImageAsset) antes de pasarla a
- * Claude Vision — el resto de assets se reutiliza tal cual entre formatos.
- */
-const BACKGROUND_CLASSIFICATIONS = new Set(["fondo", "imagen_principal"]);
 
 /**
  * Opción A — adaptaciones profesionales: Browserless (render real del master)
@@ -153,8 +150,17 @@ export const renderAdaptations = task({
 
     // Assets que se reencuadran por formato con FLUX Kontext antes de pasarlos
     // a Claude Vision (ver loop más abajo) — el resto se reutiliza tal cual.
+    // Reencuadre con FLUX Kontext solo para la capa que el usuario marcó
+    // explícitamente como JPG (toggle en el editor de capas) — decisión
+    // explícita del usuario en vez de inferir "es fondo" por classification,
+    // y el umbral de área descarta capas JPG pequeñas (p. ej. un logo) que no
+    // tiene sentido reencuadrar.
     const cropTargets = allAssets.filter(
-      (a) => !a.discarded && BACKGROUND_CLASSIFICATIONS.has(a.classification ?? ""),
+      (a) =>
+        !a.discarded &&
+        a.export_as_jpg === true &&
+        a.layer_bounds &&
+        a.layer_bounds.width * a.layer_bounds.height >= 10000,
     );
 
     const zipEntries: ZipFileEntry[] = [];
@@ -198,7 +204,15 @@ export const renderAdaptations = task({
         // descargar de Storage el original para estas capas).
         const fallbackOverrides = new Map<string, Buffer>();
 
-        for (const asset of cropTargets) {
+        for (let cropIndex = 0; cropIndex < cropTargets.length; cropIndex++) {
+          const asset = cropTargets[cropIndex];
+
+          // Espaciar llamadas a Replicate cuando hay más de un cropTarget en
+          // este formato — evita el rate limiting de la API de Replicate.
+          if (cropIndex > 0) {
+            await sleep(10_000);
+          }
+
           const pngFilename = assetFilename(asset);
           if (!pngFilename || !asset.file_path) continue;
 
