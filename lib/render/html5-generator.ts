@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type Anthropic from "@anthropic-ai/sdk";
 import { createClaudeClient } from "@/lib/claude/client";
 import { exportFilenameFor } from "@/lib/render/export-format";
+import { renderInlinedHtmlToImage } from "@/lib/render/browserless-renderer";
 import type { LayerBounds, ProjectAsset, TextLayerMetadata } from "@/lib/types";
 
 export type Html5FormatSpec = { width: number; height: number; iabFormat: string };
@@ -259,4 +260,119 @@ export async function adaptHtml5WithVision(
   const raw = textBlock && textBlock.type === "text" ? textBlock.text : "";
 
   return sanitizeAssetPaths(ensureAdBorder(sanitizeHtml(stripCodeFence(raw))));
+}
+
+type VisualEvaluation = { hasProblems: boolean; issues: string[] };
+
+function parseVisualEvaluation(text: string): VisualEvaluation {
+  try {
+    const parsed = JSON.parse(text.replace(/```json|```/gi, "").trim());
+    const issues = Array.isArray(parsed.issues) ? parsed.issues.filter((i: unknown) => typeof i === "string") : [];
+    return { hasProblems: !!parsed.hasProblems, issues };
+  } catch {
+    return { hasProblems: false, issues: [] };
+  }
+}
+
+/**
+ * Sustituye los `src="filename"` del HTML por data URIs base64 a partir de
+ * `assetBuffers` — necesario para renderizar con `page.setContent()`
+ * (renderInlinedHtmlToImage), que no tiene origen público detrás y por tanto
+ * no puede resolver rutas relativas a Storage.
+ */
+function inlineAssetsAsDataUrls(html: string, assetBuffers: Map<string, Buffer>): string {
+  let inlined = html;
+  for (const [filename, buffer] of assetBuffers) {
+    const dataUrl = `data:${imageMediaTypeFor(filename)};base64,${buffer.toString("base64")}`;
+    inlined = inlined.replaceAll(`src="${filename}"`, `src="${dataUrl}"`).replaceAll(`src='${filename}'`, `src='${dataUrl}'`);
+  }
+  return inlined;
+}
+
+/**
+ * Loop de feedback visual sobre el HTML5 ya adaptado a un formato (ver
+ * adaptHtml5WithVision / trigger/render-adaptations.ts): renderiza el HTML con
+ * Browserless (assets inlineados como base64 — ver inlineAssetsAsDataUrls),
+ * Claude Vision evalúa si hay problemas evidentes de layout (texto fuera del
+ * banner, elementos solapados/cortados, áreas vacías) y, si los hay, Claude
+ * corrige el HTML manteniendo animación y elementos correctos. Hasta
+ * `maxIterations` rondas; termina antes si una evaluación no reporta
+ * problemas. Coste aproximado por formato: ~$0.01 evaluación + ~$0.06 por
+ * corrección aplicada.
+ */
+export async function refineHtml5WithVisualFeedback(
+  html: string,
+  format: Html5FormatSpec,
+  assetBuffers: Map<string, Buffer>,
+  maxIterations: number = 2,
+): Promise<string> {
+  const client = createClaudeClient();
+  let currentHtml = html;
+
+  for (let i = 0; i < maxIterations; i++) {
+    const inlinedHtml = inlineAssetsAsDataUrls(currentHtml, assetBuffers);
+    const renderedBuffer = await renderInlinedHtmlToImage(inlinedHtml, format.width, format.height);
+
+    const evaluationResponse = await client.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 256,
+      messages: [
+        {
+          role: "user",
+          content: [
+            textContentBlock(
+              [
+                `Evalúa este banner publicitario de ${format.width}x${format.height}px como productor experto.`,
+                "¿Hay problemas evidentes de layout? (texto fuera del banner, elementos solapados, texto ilegible, elementos cortados, áreas negras donde debería haber contenido)",
+                'Responde SOLO con JSON: {"hasProblems": boolean, "issues": string[]}',
+              ].join("\n"),
+            ),
+            imageContentBlock("image/png", renderedBuffer),
+          ],
+        },
+      ],
+    });
+
+    const evalBlock = evaluationResponse.content.find((block) => block.type === "text");
+    const evaluation = parseVisualEvaluation(evalBlock && evalBlock.type === "text" ? evalBlock.text : "{}");
+
+    console.log(`Visual feedback iteración ${i + 1}/${maxIterations} (${format.iabFormat}):`, evaluation);
+
+    if (!evaluation.hasProblems || evaluation.issues.length === 0) break;
+    if (i === maxIterations - 1) break;
+
+    const fixResponse = await client.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 8192,
+      messages: [
+        {
+          role: "user",
+          content: [
+            textContentBlock(
+              `Eres un productor experto en HTML5 publicitario. Este banner de ${format.width}x${format.height}px tiene estos problemas:`,
+            ),
+            imageContentBlock("image/png", renderedBuffer),
+            textContentBlock(
+              [
+                `Problemas detectados: ${evaluation.issues.join(", ")}`,
+                "",
+                "HTML actual:",
+                currentHtml,
+                "",
+                "Corrige SOLO los problemas mencionados. No cambies la animación ni elementos que están bien.",
+                "Devuelve SOLO el HTML completo corregido comenzando con <!doctype html>",
+              ].join("\n"),
+            ),
+          ],
+        },
+      ],
+    });
+
+    const fixBlock = fixResponse.content.find((block) => block.type === "text");
+    const fixedHtml = fixBlock && fixBlock.type === "text" ? fixBlock.text : currentHtml;
+
+    currentHtml = sanitizeAssetPaths(ensureAdBorder(sanitizeHtml(stripCodeFence(fixedHtml))));
+  }
+
+  return currentHtml;
 }

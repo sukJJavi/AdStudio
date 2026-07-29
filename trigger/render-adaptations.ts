@@ -4,7 +4,7 @@ import { createTriggerSupabaseClient } from "@/lib/supabase/trigger-client";
 import { getIABFormatById, type IABFormat } from "@/lib/iab/specs";
 import { unblockedFormats } from "@/lib/iab/incident-analyzer";
 import { downloadAsset, pickLargestBy } from "@/lib/render/assets";
-import { adaptHtml5WithVision } from "@/lib/render/html5-generator";
+import { adaptHtml5WithVision, refineHtml5WithVisualFeedback } from "@/lib/render/html5-generator";
 import { getHtml5Master } from "@/lib/render/html5-cache";
 import { renderHtmlToImage } from "@/lib/render/browserless-renderer";
 import { adaptImageAsset } from "@/lib/render/replicate-outpainting";
@@ -270,6 +270,13 @@ export const renderAdaptations = task({
           { width: spec.ancho, height: spec.alto, iabFormat: format.iab_format },
         );
 
+        console.log(`Formato ${n}/${total}: refinando con feedback visual...`);
+        const refinedHtml = await refineHtml5WithVisualFeedback(
+          adaptedHtml,
+          { width: spec.ancho, height: spec.alto, iabFormat: format.iab_format },
+          formatAssetBuffers,
+        );
+
         console.log(`Formato ${n}/${total}: componiendo fallback.jpg...`);
         const fallbackJpg = await renderFallbackFromFrame(
           payload.projectId,
@@ -284,7 +291,7 @@ export const renderAdaptations = task({
         await Promise.all([
           supabase.storage
             .from("adstudio-projects")
-            .upload(`${basePath}/index.html`, adaptedHtml, { contentType: "text/html", upsert: true }),
+            .upload(`${basePath}/index.html`, refinedHtml, { contentType: "text/html", upsert: true }),
           supabase.storage
             .from("adstudio-projects")
             .upload(`${basePath}/fallback.jpg`, fallbackJpg, { contentType: "image/jpeg", upsert: true }),
@@ -321,7 +328,7 @@ export const renderAdaptations = task({
 
         const pieceFolders = pieceFoldersFor(format);
         for (const pieceFolder of pieceFolders) {
-          zipEntries.push({ path: `${pieceFolder}/index.html`, content: adaptedHtml });
+          zipEntries.push({ path: `${pieceFolder}/index.html`, content: refinedHtml });
           for (const png of formatPngEntries) {
             zipEntries.push({ path: `${pieceFolder}/${png.filename}`, content: png.buffer });
           }
@@ -334,7 +341,7 @@ export const renderAdaptations = task({
           width: spec.ancho,
           height: spec.alto,
           jpgSizeBytes: fallbackJpg.byteLength,
-          htmlSizeBytes: Buffer.byteLength(adaptedHtml, "utf8"),
+          htmlSizeBytes: Buffer.byteLength(refinedHtml, "utf8"),
           incidencias: format.incidencias ?? [],
           soportes: format.soportes ?? [],
         });
