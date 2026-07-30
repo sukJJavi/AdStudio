@@ -241,14 +241,6 @@ export function BriefForm({
     }
   }
 
-  const masterRow = rows.find((r) => r.is_master) ?? null;
-  const masterDimensiones = masterRow ? resolveFormatDimensions(masterRow.iab_format) : null;
-  const psdMismatchWarning =
-    project.psd_width && project.psd_height && masterDimensiones &&
-    (project.psd_width !== masterDimensiones.ancho || project.psd_height !== masterDimensiones.alto)
-      ? `⚠ El PSD es de ${project.psd_width}x${project.psd_height}px pero el formato master del plan es ${masterDimensiones.ancho}x${masterDimensiones.alto}px. Verifica que el PSD corresponde al formato correcto.`
-      : null;
-
   const [analisis, setAnalisis] = useState<AnalisisRow[] | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -282,10 +274,6 @@ export function BriefForm({
       return withDefaultMaster(next);
     });
     setAnalisis(null);
-  }
-
-  function selectMaster(key: string) {
-    setRows((prev) => prev.map((r) => ({ ...r, is_master: r.key === key })));
   }
 
   function addSoporte(key: string, medio: string) {
@@ -597,7 +585,6 @@ export function BriefForm({
                       {rows.map((row) => (
                         <SelectItem key={row.key} value={row.key}>
                           {row.nombre_soporte || row.iab_format}
-                          {row.is_master ? " (master)" : ""}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -617,7 +604,6 @@ export function BriefForm({
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead className="w-14">Master</TableHead>
                 <TableHead>Soporte</TableHead>
                 <TableHead>Formato IAB</TableHead>
                 <TableHead>Dimensiones</TableHead>
@@ -636,15 +622,6 @@ export function BriefForm({
                 return (
                   <Fragment key={row.key}>
                     <TableRow>
-                      <TableCell className="text-center">
-                        <input
-                          type="radio"
-                          name="master-format"
-                          aria-label={`Marcar "${row.nombre_soporte || row.iab_format}" como formato master`}
-                          checked={row.is_master}
-                          onChange={() => selectMaster(row.key)}
-                        />
-                      </TableCell>
                       <TableCell>
                         <div className="flex flex-wrap items-center gap-1">
                           {row.soportes.map((medio, i) => (
@@ -761,7 +738,7 @@ export function BriefForm({
                     </TableRow>
                     {rowAnalisis && rowAnalisis.incidencias.length > 0 && (
                       <TableRow className="bg-muted/40">
-                        <TableCell colSpan={psdAssets.length > 1 ? 9 : 8}>
+                        <TableCell colSpan={psdAssets.length > 1 ? 8 : 7}>
                           <ul className="flex flex-col gap-1 text-sm">
                             {rowAnalisis.incidencias.map((inc, i) => (
                               <li key={i}>
@@ -795,7 +772,6 @@ export function BriefForm({
             </p>
           )}
 
-          {psdMismatchWarning && <p className="text-sm text-[#F5C46B]">{psdMismatchWarning}</p>}
         </CardContent>
       </Card>
 

@@ -257,6 +257,13 @@ create index if not exists adstudio_formats_project_id_idx on adstudio_formats(p
 create index if not exists adstudio_assets_project_id_idx on adstudio_assets(project_id);
 create index if not exists adstudio_masters_project_id_idx on adstudio_masters(project_id);
 create index if not exists adstudio_masters_source_psd_id_idx on adstudio_masters(source_psd_id);
+-- Bloque 15: permite el upsert por (project_id, source_psd_id) en
+-- trigger/render-master.ts:renderOneMaster — un master real por PSD. Parcial
+-- (WHERE source_psd_id IS NOT NULL) porque las filas de adaptación (Nivel 2
+-- draft/ready) comparten la misma tabla con source_psd_id nulo.
+create unique index if not exists adstudio_masters_project_psd_unique
+  on adstudio_masters(project_id, source_psd_id)
+  where source_psd_id is not null;
 create index if not exists adstudio_changes_project_id_idx on adstudio_changes(project_id);
 create index if not exists adstudio_approval_tokens_project_id_idx on adstudio_approval_tokens(project_id);
 create index if not exists adstudio_approval_tokens_token_idx on adstudio_approval_tokens(token);

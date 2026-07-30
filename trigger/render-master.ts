@@ -236,7 +236,7 @@ async function renderOneMaster(params: {
       html,
       status: "ready",
     },
-    { onConflict: "project_id,iab_format" },
+    { onConflict: "project_id,source_psd_id" },
   );
 
   if (driverFormatId) {

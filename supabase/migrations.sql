@@ -279,3 +279,17 @@ ALTER TABLE adstudio_formats
 -- ratio de asignación — se guardan en adstudio_assets.metadata (psdWidth,
 -- psdHeight) del propio asset PSD, ver trigger/analyze-psd.ts. No requiere
 -- columna nueva (metadata ya es jsonb).
+
+-- Constraint que permite el upsert por (project_id, source_psd_id) en
+-- trigger/render-master.ts:renderOneMaster — un master real (source_psd_id no
+-- nulo) por PSD. Parcial porque las filas de adaptación comparten la tabla
+-- con source_psd_id nulo (no deben competir por unicidad entre sí).
+CREATE UNIQUE INDEX IF NOT EXISTS adstudio_masters_project_psd_unique
+  ON adstudio_masters(project_id, source_psd_id)
+  WHERE source_psd_id IS NOT NULL;
+
+-- El campo is_master (Bloque 9) queda obsoleto con multi-PSD: ya no se elige
+-- UN master del plan, cada PSD subido genera el suyo (trigger/render-master.ts
+-- itera sobre TODOS los PSD sin filtrar por is_master). Se deja en el schema
+-- por compatibilidad (masterCount<=1 sigue validándose en app/api/brief/route.ts)
+-- pero components/project/brief-form.tsx ya no lo expone en la UI.
