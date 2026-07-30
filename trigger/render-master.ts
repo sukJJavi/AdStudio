@@ -273,6 +273,16 @@ export const renderMaster = task({
       throw new Error("El proyecto no tiene ningún PSD subido.");
     }
 
+    console.log(
+      "PSDs encontrados para master:",
+      psdAssets.map((p) => ({
+        id: p.id,
+        name: p.layer_name,
+        width: (p.metadata as TextLayerMetadata | undefined)?.psdWidth,
+        height: (p.metadata as TextLayerMetadata | undefined)?.psdHeight,
+      })),
+    );
+
     metadata.set("step", "seleccionando-formato");
     metadata.set("progress", 0.1);
 
@@ -337,6 +347,8 @@ export const renderMaster = task({
     for (let i = 0; i < psdAssets.length; i++) {
       const psdAsset = psdAssets[i];
 
+      console.log(`Generando master para PSD ${psdAsset.layer_name} (${i + 1}/${psdAssets.length})`);
+
       metadata.set("step", `generando-master-psd-${i + 1}-de-${psdAssets.length}`);
       metadata.set("progress", i / psdAssets.length);
 
@@ -353,7 +365,12 @@ export const renderMaster = task({
       // vinculado), con copy vacío y un identificador sintético.
       const driverFormat = allFormats.find((f) => f.source_psd_id === psdAsset.id) ?? null;
       const iabFormat = driverFormat?.iab_format ?? syntheticIabFormat(psdAsset, dims);
-      const scopedAssets = allAssets.filter((a) => a.source_psd_id === psdAsset.id);
+      const scopedAssets = allAssets.filter((a) => a.source_psd_id === psdAsset.id && !a.discarded);
+
+      if (scopedAssets.length === 0) {
+        console.warn(`El PSD ${psdAsset.layer_name} (${psdAsset.id}) no tiene capas no descartadas, se omite su master.`);
+        continue;
+      }
 
       await renderOneMaster({
         projectId: payload.projectId,
