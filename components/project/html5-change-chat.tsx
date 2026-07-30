@@ -20,6 +20,7 @@ export function Html5ChangeChat({
   initialChanges,
   onApplied,
   disabled = false,
+  extraBody,
 }: {
   projectId: string;
   formatId?: string | null;
@@ -28,6 +29,8 @@ export function Html5ChangeChat({
   /** Se llama tras aplicar un cambio con éxito — el caller decide qué refrescar (p. ej. forzar recarga del iframe). */
   onApplied?: () => void;
   disabled?: boolean;
+  /** Campos adicionales a incluir en el body del POST — p. ej. `{ sourcePsdId }` para el chat de un master concreto (ver components/project/master-view.tsx). */
+  extraBody?: Record<string, unknown>;
 }) {
   const [changeText, setChangeText] = useState("");
   const [changes, setChanges] = useState<MasterChangeEntry[]>(initialChanges);
@@ -47,6 +50,7 @@ export function Html5ChangeChat({
         body: JSON.stringify({
           projectId,
           ...(formatId ? { formatId } : {}),
+          ...extraBody,
           changeDescription: changeText.trim(),
         }),
       });

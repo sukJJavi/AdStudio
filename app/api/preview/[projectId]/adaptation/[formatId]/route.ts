@@ -9,11 +9,11 @@ export const runtime = "nodejs";
  * sin sesión — mismo criterio que app/api/preview/[projectId]/route.ts (el
  * master).
  *
- * Dos orígenes posibles en Storage según cómo se produjo el formato:
- * - Con `source_psd_id` propio (Bloque 11, ver trigger/render-master.ts): su
- *   propio HTML5, subido a `{projectId}/masters/{formatId}/{iab_format}.html`.
- * - Sin `source_psd_id` (adaptado desde el master con FLUX + Claude Vision,
- *   ver trigger/render-adaptations.ts): `{projectId}/adaptations/{iab_format}/index.html`.
+ * Bloque 15: todo formato adaptado (match exacto con su master-base, Nivel 1
+ * o Nivel 2, ver trigger/render-adaptations.ts) sube su HTML5 al mismo sitio,
+ * `{projectId}/adaptations/{iab_format}/index.html` — ya no hay una ruta
+ * distinta para formatos con `source_psd_id` propio (esos ahora se procesan
+ * igual que el resto, copiando el master de su PSD asignado).
  */
 export async function GET(
   _req: NextRequest,
@@ -25,7 +25,7 @@ export async function GET(
 
   const { data: format, error: formatError } = await supabase
     .from("adstudio_formats")
-    .select("iab_format, source_psd_id")
+    .select("iab_format")
     .eq("id", formatId)
     .eq("project_id", projectId)
     .single();
@@ -34,9 +34,7 @@ export async function GET(
     return new NextResponse("Formato no encontrado.", { status: 404 });
   }
 
-  const htmlPath = format.source_psd_id
-    ? `${projectId}/masters/${formatId}/${format.iab_format}.html`
-    : `${projectId}/adaptations/${format.iab_format}/index.html`;
+  const htmlPath = `${projectId}/adaptations/${format.iab_format}/index.html`;
 
   const { data, error } = await supabase.storage.from("adstudio-projects").download(htmlPath);
 

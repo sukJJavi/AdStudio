@@ -251,3 +251,31 @@ ALTER TABLE adstudio_masters ALTER COLUMN png_path DROP NOT NULL;
 -- concreto (adaptación Nivel 2) en vez de al proyecto/master principal.
 ALTER TABLE adstudio_changes
   ADD COLUMN IF NOT EXISTS format_id uuid DEFAULT NULL REFERENCES adstudio_formats(id) ON DELETE CASCADE;
+
+-- =========================================================
+-- Bloque 15 — multi-master: un master independiente por cada PSD subido
+-- =========================================================
+
+-- Cada PSD subido (adstudio_assets, layer_type='psd') genera su propio master
+-- (trigger/render-master.ts) en vez de solo el marcado is_master. Esta columna
+-- identifica qué master-fila corresponde a qué PSD, y distingue "master real"
+-- (source_psd_id no nulo) de "adaptación" (format_id no nulo, ver
+-- lib/master.ts:getMasterStatus).
+ALTER TABLE adstudio_masters
+  ADD COLUMN IF NOT EXISTS source_psd_id uuid DEFAULT NULL;
+CREATE INDEX IF NOT EXISTS adstudio_masters_source_psd_id_idx ON adstudio_masters(source_psd_id);
+
+-- Override manual del master-base asignado a un formato del plan (select
+-- "Master base" en components/project/brief-form.tsx) — si es null, se usa
+-- la asignación automática por ratio de aspecto más cercano
+-- (trigger/render-adaptations.ts:assignMasterToFormat), o source_psd_id si
+-- ya estaba seteado (asociación histórica del Bloque 11).
+ALTER TABLE adstudio_formats
+  ADD COLUMN IF NOT EXISTS master_base_psd_id uuid DEFAULT NULL;
+
+-- Dimensiones por PSD: antes psd_width/psd_height vivían solo a nivel
+-- proyecto (Bloque 9), sobrescritas por el último PSD procesado. Con varios
+-- PSDs independientes, cada uno necesita sus propias dimensiones para el
+-- ratio de asignación — se guardan en adstudio_assets.metadata (psdWidth,
+-- psdHeight) del propio asset PSD, ver trigger/analyze-psd.ts. No requiere
+-- columna nueva (metadata ya es jsonb).

@@ -14,6 +14,7 @@ type BriefFormatInput = {
   is_master?: boolean;
   soportes?: string[];
   source_psd_id?: string | null;
+  master_base_psd_id?: string | null;
 };
 
 type BriefPayload = {
@@ -128,6 +129,7 @@ export async function POST(req: NextRequest) {
         is_master: !!f.is_master,
         soportes: Array.isArray(f.soportes) ? f.soportes : [],
         source_psd_id: f.source_psd_id ?? null,
+        master_base_psd_id: f.master_base_psd_id ?? null,
         status: "pending",
       })),
     );
@@ -194,6 +196,7 @@ export async function PUT(req: NextRequest) {
         is_master: !!f.is_master,
         soportes: Array.isArray(f.soportes) ? f.soportes : [],
         source_psd_id: f.source_psd_id ?? null,
+        master_base_psd_id: f.master_base_psd_id ?? null,
         status: "pending",
       })),
     );

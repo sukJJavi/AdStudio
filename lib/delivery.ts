@@ -54,19 +54,19 @@ export async function getDeliveryInfo(projectId: string): Promise<DeliveryInfo |
   const pieces: DeliveryPiece[] = await Promise.all(
     ((formats ?? []) as ProjectFormat[]).map(async (format) => {
       const spec = getIABFormatById(format.iab_format);
-      // Bloque 11: formatos con PSD propio suben su fallback.jpg a
-      // masters/{format.id}/, el resto a adaptations/{iab_format}/ (ver
-      // trigger/render-master.ts y trigger/render-adaptations.ts).
-      const folder = format.source_psd_id ? `${projectId}/masters/${format.id}` : `${projectId}/adaptations/${format.iab_format}`;
-      const filenamePrefix = format.source_psd_id ? format.iab_format : "fallback";
-      const path = `${folder}/${filenamePrefix}.jpg`;
+      // Bloque 15: todo formato adaptado (match exacto, Nivel 1 o Nivel 2)
+      // sube su fallback.jpg al mismo sitio, adaptations/{iab_format}/ (ver
+      // trigger/render-adaptations.ts) — ya no hay una carpeta distinta para
+      // formatos con PSD propio.
+      const folder = `${projectId}/adaptations/${format.iab_format}`;
+      const path = `${folder}/fallback.jpg`;
 
       const [{ data: signed }, { data: listing }] = await Promise.all([
         supabase.storage.from("adstudio-projects").createSignedUrl(path, PIECE_SIGNED_URL_TTL_SECONDS),
         supabase.storage.from("adstudio-projects").list(folder),
       ]);
 
-      const jpgSizeBytes = listing?.find((f) => f.name === `${filenamePrefix}.jpg`)?.metadata?.size ?? null;
+      const jpgSizeBytes = listing?.find((f) => f.name === "fallback.jpg")?.metadata?.size ?? null;
 
       // Chat de refinamiento por pieza (Bloque 14) — disponible tanto para
       // Nivel 1 como Nivel 2 (ver trigger/render-adaptations.ts), no solo

@@ -39,16 +39,12 @@ export async function rebuildDeliveryZip(projectId: string, supabase: SupabaseCl
       const spec = getIABFormatById(format.iab_format);
       if (!spec) continue;
 
-      // Bloque 11: formatos con PSD propio suben su html/fallback a
-      // masters/{format.id}/ (ver trigger/render-master.ts), el resto a
-      // adaptations/{iab_format}/ (ver trigger/render-adaptations.ts) — mismas
-      // rutas que ya sirve app/api/preview/[projectId]/adaptation/[formatId].
-      const htmlPath = format.source_psd_id
-        ? `${projectId}/masters/${format.id}/${format.iab_format}.html`
-        : `${projectId}/adaptations/${format.iab_format}/index.html`;
-      const fallbackPath = format.source_psd_id
-        ? `${projectId}/masters/${format.id}/${format.iab_format}.jpg`
-        : `${projectId}/adaptations/${format.iab_format}/fallback.jpg`;
+      // Bloque 15: todo formato adaptado (match exacto, Nivel 1 o Nivel 2)
+      // sube su html/fallback al mismo sitio, adaptations/{iab_format}/ (ver
+      // trigger/render-adaptations.ts) — mismas rutas que ya sirve
+      // app/api/preview/[projectId]/adaptation/[formatId].
+      const htmlPath = `${projectId}/adaptations/${format.iab_format}/index.html`;
+      const fallbackPath = `${projectId}/adaptations/${format.iab_format}/fallback.jpg`;
       // Los PNG/JPG sueltos de cada pieza se persisten aquí para el iframe de
       // preview (ver trigger/render-adaptations.ts) — ya son los assets
       // correctos (fondo/imagen_principal reencuadrado con FLUX si aplica).

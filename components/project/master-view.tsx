@@ -61,6 +61,11 @@ export function MasterView({
   useEffect(() => setOrigin(window.location.origin), []);
 
   const [previewNonce, setPreviewNonce] = useState(0);
+  // Bloque 15: nonce de recarga del iframe por master secundario (uno por
+  // PSD, ver trigger/render-master.ts) — cada uno tiene su propio chat de
+  // cambios independiente (components/project/html5-change-chat.tsx).
+  const [otherPreviewNonces, setOtherPreviewNonces] = useState<Record<string, number>>({});
+  const [openChatMasterId, setOpenChatMasterId] = useState<string | null>(null);
 
   const isGenerating = status.projectStatus === "master_generating";
   const hasMaster = status.masters.length > 0;
@@ -426,30 +431,62 @@ export function MasterView({
           {otherMasters.length > 0 && (
             <Card>
               <CardHeader>
-                <CardTitle>
-                  {otherMasters.some((v) => formatLabelsByIabFormat[v.iabFormat]?.ownPsd)
-                    ? "Otros masters (uno por PSD)"
-                    : "Otras variantes"}
-                </CardTitle>
+                <CardTitle>Otros masters (uno por PSD)</CardTitle>
               </CardHeader>
               <CardContent className="grid gap-4 sm:grid-cols-2">
                 {otherMasters.map((variant) => {
                   const label = formatLabelsByIabFormat[variant.iabFormat];
+                  const nonce = otherPreviewNonces[variant.id] ?? 0;
+                  const chatOpen = openChatMasterId === variant.id;
                   return (
                     <div key={variant.id} className="space-y-2">
-                      {variant.jpgUrl && (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          src={variant.jpgUrl}
-                          alt={`Variante ${variant.iabFormat}`}
-                          className="w-full rounded-md border border-border"
-                        />
+                      {variant.sourcePsdId ? (
+                        <div className="overflow-hidden rounded-md border border-[#232935] bg-[#070A0F]">
+                          <iframe
+                            src={`/api/preview/${projectId}/master/${variant.sourcePsdId}${nonce > 0 ? `?v=${nonce}` : ""}`}
+                            width={variant.width}
+                            height={variant.height}
+                            style={{ border: 0, display: "block", width: "100%", height: "auto", aspectRatio: `${variant.width}/${variant.height}` }}
+                            title={`Preview del master — ${label?.nombreSoporte ?? variant.iabFormat}`}
+                          />
+                        </div>
+                      ) : (
+                        variant.jpgUrl && (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={variant.jpgUrl}
+                            alt={`Variante ${variant.iabFormat}`}
+                            className="w-full rounded-md border border-border"
+                          />
+                        )
                       )}
                       <p className="text-xs text-muted-foreground">
                         {label?.nombreSoporte ?? variant.iabFormat} · {variant.width}×{variant.height}px
                         {variant.jpgSizeBytes != null ? ` · ${formatBytes(variant.jpgSizeBytes)}` : ""}
-                        {label?.ownPsd ? " · PSD propio" : ""}
                       </p>
+                      {variant.sourcePsdId && (
+                        <>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="w-full"
+                            onClick={() => setOpenChatMasterId(chatOpen ? null : variant.id)}
+                          >
+                            {chatOpen ? "Ocultar chat de cambios" : "Ajustar este master"}
+                          </Button>
+                          {chatOpen && (
+                            <Html5ChangeChat
+                              projectId={projectId}
+                              endpoint="/api/master/refine"
+                              extraBody={{ sourcePsdId: variant.sourcePsdId }}
+                              initialChanges={[]}
+                              onApplied={() =>
+                                setOtherPreviewNonces((prev) => ({ ...prev, [variant.id]: (prev[variant.id] ?? 0) + 1 }))
+                              }
+                            />
+                          )}
+                        </>
+                      )}
                     </div>
                   );
                 })}

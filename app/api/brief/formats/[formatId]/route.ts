@@ -4,6 +4,8 @@ import { requireProjectOwnership } from "@/lib/authorization";
 
 type PatchFormatBody = {
   source_psd_id?: string | null;
+  /** Bloque 15: override manual del master-base asignado por ratio (ver trigger/render-adaptations.ts:assignMasterToFormat). */
+  master_base_psd_id?: string | null;
 };
 
 /**
@@ -11,6 +13,11 @@ type PatchFormatBody = {
  * plan que produce — ver "Material por formato" en components/project/brief-form.tsx.
  * Un formato con source_psd_id se produce directamente desde ese PSD en
  * trigger/render-master.ts y ya no se adapta desde el master con FLUX.
+ *
+ * `master_base_psd_id` (Bloque 15) es distinto: fuerza el master-base usado
+ * en trigger/render-adaptations.ts cuando la asignación automática por ratio
+ * de aspecto no es la deseada — a diferencia de source_psd_id, no implica que
+ * el formato SEA ese PSD, solo que debe adaptarse desde su master.
  */
 export async function PATCH(
   req: NextRequest,
@@ -19,7 +26,7 @@ export async function PATCH(
   const { formatId } = await params;
   const body = (await req.json()) as PatchFormatBody;
 
-  if (!("source_psd_id" in body)) {
+  if (!("source_psd_id" in body) && !("master_base_psd_id" in body)) {
     return NextResponse.json({ error: "No hay campos válidos para actualizar" }, { status: 400 });
   }
 
@@ -40,11 +47,12 @@ export async function PATCH(
     return NextResponse.json({ error: auth.error }, { status: auth.status });
   }
 
-  if (body.source_psd_id) {
+  for (const psdId of [body.source_psd_id, body.master_base_psd_id]) {
+    if (!psdId) continue;
     const { data: psdAsset } = await supabase
       .from("adstudio_assets")
       .select("id")
-      .eq("id", body.source_psd_id)
+      .eq("id", psdId)
       .eq("project_id", format.project_id)
       .eq("layer_type", "psd")
       .single();
@@ -54,9 +62,13 @@ export async function PATCH(
     }
   }
 
+  const patch: Record<string, string | null> = {};
+  if ("source_psd_id" in body) patch.source_psd_id = body.source_psd_id ?? null;
+  if ("master_base_psd_id" in body) patch.master_base_psd_id = body.master_base_psd_id ?? null;
+
   const { data: updated, error } = await supabase
     .from("adstudio_formats")
-    .update({ source_psd_id: body.source_psd_id ?? null })
+    .update(patch)
     .eq("id", formatId)
     .select()
     .single();

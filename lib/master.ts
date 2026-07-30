@@ -108,6 +108,8 @@ export type MasterWithUrls = {
   jpgUrl: string | null;
   pngUrl: string | null;
   createdAt: string;
+  /** PSD (adstudio_assets.id) del que es master esta fila — Bloque 15: cada PSD es un master independiente. */
+  sourcePsdId: string | null;
 };
 
 export type MasterStatusResponse = {
@@ -122,7 +124,7 @@ export type MasterStatusResponse = {
    * vez de renderizar el HTML en el iframe).
    */
   hasHtml5: boolean;
-  /** Peso de `{project_id}/master/master.zip`, para mostrar junto al preview. */
+  /** Peso de `{project_id}/masters/{sourcePsdId}/master.zip` del master primario, para mostrar junto al preview. */
   zipSizeBytes: number | null;
   /** Enlace de aprobación del cliente más reciente — se muestra de forma permanente en master-view.tsx. */
   approval: ApprovalStatus;
@@ -139,32 +141,20 @@ export async function getMasterStatus(projectId: string): Promise<MasterStatusRe
 
   if (projectError || !project) return null;
 
-  // Excluye las adaptaciones (Nivel 1 con status='ready' y Nivel 2 con
-  // status='draft', ver trigger/render-adaptations.ts y
-  // lib/adaptation-refine.ts) — comparten esta misma tabla pero no son
-  // masters/variantes del proyecto, así que no deben listarse aquí. Una fila
-  // es un master real si no tiene format_id (flujo histórico de un único PSD)
-  // o si su formato es el marcado is_master o tiene PSD propio (Bloque 11).
-  const [{ data: masterRows }, { data: formatRows }] = await Promise.all([
-    supabase
-      .from("adstudio_masters")
-      .select("*")
-      .eq("project_id", projectId)
-      .neq("status", "draft")
-      .order("created_at", { ascending: false }),
-    supabase.from("adstudio_formats").select("id, is_master, source_psd_id").eq("project_id", projectId),
-  ]);
-
-  const masterFormatIds = new Set(
-    (formatRows ?? []).filter((f) => f.is_master || f.source_psd_id).map((f) => f.id as string),
-  );
-
-  const filteredMasterRows = (masterRows ?? []).filter(
-    (m) => !m.format_id || masterFormatIds.has(m.format_id as string),
-  );
+  // Bloque 15: cada PSD subido es un master independiente, identificado por
+  // `source_psd_id` (ver trigger/render-master.ts) — un master real siempre
+  // lo tiene. Las adaptaciones (Nivel 1/2, ver trigger/render-adaptations.ts y
+  // lib/adaptation-refine.ts) comparten esta misma tabla pero se identifican
+  // por `format_id` sin `source_psd_id`, así que no deben listarse aquí.
+  const { data: masterRows } = await supabase
+    .from("adstudio_masters")
+    .select("*")
+    .eq("project_id", projectId)
+    .not("source_psd_id", "is", null)
+    .order("created_at", { ascending: false });
 
   const masters: MasterWithUrls[] = await Promise.all(
-    (filteredMasterRows as MasterRecord[]).map(async (m) => {
+    ((masterRows ?? []) as MasterRecord[]).map(async (m) => {
       const [jpgSigned, pngSigned] = await Promise.all([
         supabase.storage.from("adstudio-projects").createSignedUrl(m.jpg_path, SIGNED_URL_TTL_SECONDS),
         supabase.storage.from("adstudio-projects").createSignedUrl(m.png_path, SIGNED_URL_TTL_SECONDS),
@@ -179,6 +169,7 @@ export async function getMasterStatus(projectId: string): Promise<MasterStatusRe
         jpgUrl: jpgSigned.data?.signedUrl ?? null,
         pngUrl: pngSigned.data?.signedUrl ?? null,
         createdAt: m.created_at,
+        sourcePsdId: m.source_psd_id,
       };
     }),
   );
@@ -198,8 +189,17 @@ export async function getMasterStatus(projectId: string): Promise<MasterStatusRe
     }
   }
 
-  const { data: masterFolderList } = await supabase.storage.from("adstudio-projects").list(`${projectId}/master`);
-  const zipSizeBytes = masterFolderList?.find((f) => f.name === "master.zip")?.metadata?.size ?? null;
+  // Bloque 15: cada master vive en su propia carpeta `masters/{sourcePsdId}`
+  // (ver trigger/render-master.ts) — se muestra el peso del ZIP del master
+  // primario, que es el que se envía a aprobación del cliente.
+  const primaryMaster = masters.find((m) => m.isPrimary) ?? masters[0] ?? null;
+  let zipSizeBytes: number | null = null;
+  if (primaryMaster?.sourcePsdId) {
+    const { data: masterFolderList } = await supabase.storage
+      .from("adstudio-projects")
+      .list(`${projectId}/masters/${primaryMaster.sourcePsdId}`);
+    zipSizeBytes = masterFolderList?.find((f) => f.name === "master.zip")?.metadata?.size ?? null;
+  }
 
   const approval = await getApprovalStatus(projectId);
 
@@ -250,58 +250,38 @@ function stripCodeFence(text: string): string {
 }
 
 /**
- * Regenera el fallback.jpg del master primario tras un cambio de HTML5 vía
+ * Regenera el fallback.jpg de un master concreto tras un cambio de HTML5 vía
  * chat (refineMasterHtml) — sin esto, el JPG de respaldo servido en el ZIP
  * quedaría desincronizado del HTML5 recién modificado. Screenshot real del
  * HTML final (mismo mecanismo que trigger/render-adaptations.ts para las
  * adaptaciones), no una recomposición manual con Sharp. Best-effort: un fallo
- * aquí no debe deshacer el cambio de HTML ya guardado.
+ * aquí no debe deshacer el cambio de HTML ya guardado. Bloque 15: recibe la
+ * fila del master directamente (no solo el primario) — cada PSD tiene su
+ * propio master editable por chat.
  */
-async function regenerateMasterFallback(
+async function regenerateMasterFallbackForRow(
   projectId: string,
+  masterRowId: string,
+  sourcePsdId: string | null,
+  width: number,
+  height: number,
+  jpgPath: string,
   html: string,
   supabase: SupabaseClient,
 ): Promise<void> {
   try {
-    const { data: masterRow } = await supabase
-      .from("adstudio_masters")
-      .select("format_id, width, height, jpg_path")
-      .eq("project_id", projectId)
-      .eq("is_primary", true)
-      .maybeSingle();
-
-    if (!masterRow?.jpg_path) return;
-
-    let sourcePsdId: string | null = null;
-    if (masterRow.format_id) {
-      const { data: formatRow } = await supabase
-        .from("adstudio_formats")
-        .select("source_psd_id")
-        .eq("id", masterRow.format_id)
-        .maybeSingle();
-      sourcePsdId = (formatRow?.source_psd_id as string | null) ?? null;
-    }
-
     const { data: assetRows } = await supabase.from("adstudio_assets").select("*").eq("project_id", projectId);
     const allAssets = (assetRows ?? []) as ProjectAsset[];
     const scopedAssets = sourcePsdId ? allAssets.filter((a) => a.source_psd_id === sourcePsdId) : allAssets;
 
     const assetBuffers = await downloadAssetBuffers(scopedAssets, supabase);
-    const fallbackJpg = await renderAdaptationFallbackJpg(
-      html,
-      { width: masterRow.width, height: masterRow.height },
-      assetBuffers,
-    );
+    const fallbackJpg = await renderAdaptationFallbackJpg(html, { width, height }, assetBuffers);
 
     await Promise.all([
       supabase.storage
         .from("adstudio-projects")
-        .upload(masterRow.jpg_path, fallbackJpg, { contentType: "image/jpeg", upsert: true }),
-      supabase
-        .from("adstudio_masters")
-        .update({ jpg_size_bytes: fallbackJpg.byteLength })
-        .eq("project_id", projectId)
-        .eq("is_primary", true),
+        .upload(jpgPath, fallbackJpg, { contentType: "image/jpeg", upsert: true }),
+      supabase.from("adstudio_masters").update({ jpg_size_bytes: fallbackJpg.byteLength }).eq("id", masterRowId),
     ]);
   } catch (err) {
     console.error("No se pudo regenerar fallback.jpg tras refineMasterHtml:", err);
@@ -337,12 +317,23 @@ export type RefineMasterResult =
   | { ok: false; status: 400 | 403 | 404 | 502; error: string };
 
 /**
- * Aplica un cambio en lenguaje natural sobre el HTML5 del master vía Claude
+ * Aplica un cambio en lenguaje natural sobre el HTML5 de un master vía Claude
  * (chat de cambios, "Opción A" — ver components/project/master-view.tsx).
- * Sobreescribe `adstudio_projects.master_html` y registra el cambio como tipo
- * 'C' (revisión de master) en adstudio_changes.
+ * Sin `sourcePsdId`, opera sobre el master PRIMARIO (comportamiento
+ * histórico, de un único master por proyecto): sobreescribe
+ * `adstudio_projects.master_html` (fuente del preview principal en
+ * `/api/preview/[projectId]`). Con `sourcePsdId` (Bloque 15 — un master
+ * independiente por PSD subido, ver trigger/render-master.ts), opera sobre la
+ * fila de ESE master en `adstudio_masters` en vez de la del proyecto — si
+ * además es el primario, también sincroniza `adstudio_projects.master_html`.
+ * En ambos casos registra el cambio como tipo 'C' (revisión de master) en
+ * adstudio_changes.
  */
-export async function refineMasterHtml(projectId: string, changeDescription: string): Promise<RefineMasterResult> {
+export async function refineMasterHtml(
+  projectId: string,
+  changeDescription: string,
+  sourcePsdId?: string | null,
+): Promise<RefineMasterResult> {
   const supabase = await createSessionSupabaseClient();
 
   const { data: project, error: projectError } = await supabase
@@ -355,7 +346,18 @@ export async function refineMasterHtml(projectId: string, changeDescription: str
     return { ok: false, status: 404, error: "Proyecto no encontrado." };
   }
 
-  if (!project.master_html) {
+  const targetMasterQuery = supabase
+    .from("adstudio_masters")
+    .select("id, html, width, height, jpg_path, is_primary, source_psd_id")
+    .eq("project_id", projectId);
+
+  const { data: targetMaster } = sourcePsdId
+    ? await targetMasterQuery.eq("source_psd_id", sourcePsdId).maybeSingle()
+    : await targetMasterQuery.eq("is_primary", true).maybeSingle();
+
+  const currentHtml = sourcePsdId ? targetMaster?.html ?? null : project.master_html;
+
+  if (!currentHtml) {
     return { ok: false, status: 400, error: "Todavía no hay un master generado para aplicar cambios." };
   }
 
@@ -418,7 +420,7 @@ export async function refineMasterHtml(projectId: string, changeDescription: str
     messages: [
       {
         role: "user",
-        content: `HTML actual:\n${project.master_html}\n\nCambio a aplicar: ${changeDescription}`,
+        content: `HTML actual:\n${currentHtml}\n\nCambio a aplicar: ${changeDescription}`,
       },
     ],
   });
@@ -431,9 +433,51 @@ export async function refineMasterHtml(projectId: string, changeDescription: str
     return { ok: false, status: 502, error: "Claude no devolvió un HTML válido." };
   }
 
-  await supabase.from("adstudio_projects").update({ master_html: html }).eq("id", projectId);
+  if (sourcePsdId && targetMaster) {
+    await supabase.from("adstudio_masters").update({ html }).eq("id", targetMaster.id);
+    if (targetMaster.is_primary) {
+      await supabase.from("adstudio_projects").update({ master_html: html }).eq("id", projectId);
+    }
+    if (targetMaster.jpg_path) {
+      await regenerateMasterFallbackForRow(
+        projectId,
+        targetMaster.id,
+        targetMaster.source_psd_id,
+        targetMaster.width,
+        targetMaster.height,
+        targetMaster.jpg_path,
+        html,
+        supabase,
+      );
+    }
+  } else {
+    await supabase.from("adstudio_projects").update({ master_html: html }).eq("id", projectId);
 
-  await regenerateMasterFallback(projectId, html, supabase);
+    // Mantiene también en sync su propia fila de adstudio_masters (Bloque 15
+    // — preview/chat por PSD y ZIP), no solo el campo a nivel proyecto.
+    const { data: primaryRow } = await supabase
+      .from("adstudio_masters")
+      .select("id, width, height, jpg_path, source_psd_id")
+      .eq("project_id", projectId)
+      .eq("is_primary", true)
+      .maybeSingle();
+
+    if (primaryRow) {
+      await supabase.from("adstudio_masters").update({ html }).eq("id", primaryRow.id);
+      if (primaryRow.jpg_path) {
+        await regenerateMasterFallbackForRow(
+          projectId,
+          primaryRow.id,
+          primaryRow.source_psd_id,
+          primaryRow.width,
+          primaryRow.height,
+          primaryRow.jpg_path,
+          html,
+          supabase,
+        );
+      }
+    }
+  }
 
   const { data: changeRow, error: changeError } = await supabase
     .from("adstudio_changes")

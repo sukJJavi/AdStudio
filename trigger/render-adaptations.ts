@@ -3,10 +3,9 @@ import sharp from "sharp";
 import { createTriggerSupabaseClient } from "@/lib/supabase/trigger-client";
 import { getIABFormatById, type IABFormat } from "@/lib/iab/specs";
 import { unblockedFormats } from "@/lib/iab/incident-analyzer";
-import { downloadAsset, pickLargestBy } from "@/lib/render/assets";
-import { adaptHtml5WithVision } from "@/lib/render/html5-generator";
-import { getHtml5Master } from "@/lib/render/html5-cache";
-import { renderHtmlToImage } from "@/lib/render/browserless-renderer";
+import { downloadAsset, downloadAssetBuffers } from "@/lib/render/assets";
+import { adaptHtml5WithVision, inlineAssetsAsDataUrls } from "@/lib/render/html5-generator";
+import { renderInlinedHtmlToImage } from "@/lib/render/browserless-renderer";
 import { adaptImageAsset } from "@/lib/render/replicate-outpainting";
 import { renderAdaptationFallbackJpg } from "@/lib/render/adaptation-fallback";
 import { exportBufferFor, exportFilenameFor } from "@/lib/render/export-format";
@@ -42,11 +41,48 @@ function contentTypeForFilename(filename: string): string {
     : "image/png";
 }
 
+type PsdMaster = {
+  psdId: string;
+  width: number;
+  height: number;
+  ratio: number;
+  iabFormat: string;
+  html: string;
+};
+
 /**
- * Opción A — adaptaciones profesionales: Browserless (render real del master)
- * + Replicate FLUX Kontext (reencuadre por asset de fondo/imagen_principal) +
- * Claude Vision (posicionamiento de todos los assets, ya reencuadrados o no).
- * Reemplaza el reescalado mecánico y la adaptación solo-con-Claude anteriores.
+ * Bloque 15 — multi-master: cada PSD subido es un master independiente (ver
+ * trigger/render-master.ts), no un único master global. Asigna cada formato
+ * del plan al master-base cuyo ratio de aspecto sea más cercano; `exact`
+ * (diferencia < 5%) significa que el formato puede servirse copiando el
+ * master de ese PSD directamente (solo ajuste geométrico mínimo), sin pasar
+ * por el pipeline de adaptación Nivel 1/2.
+ */
+function assignMasterToFormat(formatRatio: number, psdMasters: PsdMaster[]): { psdId: string; exact: boolean } {
+  let closest = psdMasters[0];
+  let minDiff = Infinity;
+  for (const m of psdMasters) {
+    const diff = Math.abs(m.ratio - formatRatio) / m.ratio;
+    if (diff < minDiff) {
+      minDiff = diff;
+      closest = m;
+    }
+  }
+  return { psdId: closest.psdId, exact: minDiff < 0.05 };
+}
+
+/**
+ * Adaptaciones profesionales: Browserless (render real del master-base
+ * asignado) + Replicate FLUX Kontext (reencuadre por asset de fondo/imagen_
+ * principal) + Claude Vision (posicionamiento de todos los assets, ya
+ * reencuadrados o no) — Nivel 2. Nivel 1 (ratio parecido) y los formatos con
+ * match casi exacto usan escalado geométrico puro, sin Claude ni FLUX.
+ *
+ * CRÍTICO (Bloque 15): los assets de cada formato se toman EXCLUSIVAMENTE del
+ * PSD asignado como su master-base (`source_psd_id`) — nunca se mezclan capas
+ * de PSDs distintos para un mismo formato (bug previo: "Adapting asset:
+ * 728x90 → 300x250" ocurría incluso cuando el 300x250 pertenecía a otro
+ * master; el ZIP salía con assets duplicados de todos los PSDs).
  */
 export const renderAdaptations = task({
   id: "render-adaptations",
@@ -60,123 +96,99 @@ export const renderAdaptations = task({
     metadata.set("step", "leyendo-datos-del-proyecto");
     metadata.set("progress", 0);
 
-    const [{ data: allFormats }, { data: assets }, { data: project }] = await Promise.all([
+    const [{ data: allFormats }, { data: assets }, { data: project }, { data: masterRows }] = await Promise.all([
       supabase.from("adstudio_formats").select("*").eq("project_id", payload.projectId),
       supabase.from("adstudio_assets").select("*").eq("project_id", payload.projectId),
       supabase.from("adstudio_projects").select("cliente, producto").eq("id", payload.projectId).single(),
+      supabase
+        .from("adstudio_masters")
+        .select("source_psd_id, width, height, iab_format, html")
+        .eq("project_id", payload.projectId)
+        .not("source_psd_id", "is", null),
     ]);
 
     if (!project) {
       throw new Error("Proyecto no encontrado.");
     }
 
-    const masterHtml = await getHtml5Master(payload.projectId, supabase);
-    if (!masterHtml) {
-      throw new Error("No hay HTML5 de master generado. Genera el master antes de producir adaptaciones.");
-    }
+    const psdMasters: PsdMaster[] = (masterRows ?? [])
+      .filter((m) => m.source_psd_id && m.html && m.width && m.height)
+      .map((m) => ({
+        psdId: m.source_psd_id as string,
+        width: m.width as number,
+        height: m.height as number,
+        ratio: (m.width as number) / (m.height as number),
+        iabFormat: m.iab_format as string,
+        html: m.html as string,
+      }));
 
-    const allFormatsWithSpec = pickLargestBy(
-      ((allFormats ?? []) as ProjectFormat[])
-        .map((format) => ({ format, spec: getIABFormatById(format.iab_format) }))
-        .filter((x): x is { format: ProjectFormat; spec: IABFormat } => x.spec != null),
-      (x) => x.spec.ancho * x.spec.alto,
-    );
-
-    // El formato master no se "adapta" a sí mismo — se excluye del loop de
-    // abajo y su render (Browserless) sirve de referencia visual para Claude
-    // y de imagen base para el outpainting de FLUX. Mismo criterio que
-    // lib/master.ts / trigger/render-master.ts: el marcado is_master, o el de
-    // mayor área si ninguno lo está (planes creados antes de ese campo).
-    const masterEntry = allFormatsWithSpec.find((x) => x.format.is_master) ?? allFormatsWithSpec[0];
-
-    if (!masterEntry) {
-      throw new Error("El proyecto no tiene formatos con especificación IAB válida.");
-    }
-
-    // Bloque 11: los formatos con PSD propio ya se produjeron directamente en
-    // trigger/render-master.ts (su propio HTML5 a partir de su PSD) — no se
-    // adaptan desde el master con FLUX, solo se copian al ZIP de entrega
-    // (ver formatsWithOwnPsd más abajo).
-    const formatsToProduce = unblockedFormats((allFormats ?? []) as ProjectFormat[])
-      .filter((format) => format.id !== masterEntry.format.id && !format.source_psd_id)
-      .map((format) => ({ format, spec: getIABFormatById(format.iab_format) }))
-      .filter((x): x is { format: ProjectFormat; spec: IABFormat } => x.spec != null);
-
-    const formatsWithOwnPsd = unblockedFormats((allFormats ?? []) as ProjectFormat[])
-      .filter((format) => format.id !== masterEntry.format.id && !!format.source_psd_id)
-      .map((format) => ({ format, spec: getIABFormatById(format.iab_format) }))
-      .filter((x): x is { format: ProjectFormat; spec: IABFormat } => x.spec != null);
-
-    if (formatsToProduce.length === 0 && formatsWithOwnPsd.length === 0) {
-      throw new Error("No hay formatos disponibles para producir (todos bloqueados, sin especificación IAB, o es el master).");
+    if (psdMasters.length === 0) {
+      throw new Error("No hay ningún master generado. Genera el master antes de producir adaptaciones.");
     }
 
     const allAssets = (assets ?? []) as ProjectAsset[];
 
-    metadata.set("step", "descargando-assets-del-master");
-    metadata.set("progress", 0.05);
+    const formatsToProduce = unblockedFormats((allFormats ?? []) as ProjectFormat[])
+      .map((format) => ({ format, spec: getIABFormatById(format.iab_format) }))
+      .filter((x): x is { format: ProjectFormat; spec: IABFormat } => x.spec != null);
 
-    // Los assets (PNG/JPG) son los mismos del master en todos los formatos: se
-    // descargan una única vez. Los clasificados fondo/imagen_principal se
-    // sustituyen por el background outpainted en el ZIP de cada adaptación
-    // (backgroundFilenames más abajo); el resto (texto/logo/CTA/decorativo) se
-    // reutiliza tal cual. El PNG original en Storage nunca cambia; la
-    // conversión a JPG (export_as_jpg) se aplica aquí, igual que en
-    // trigger/render-master.ts.
-    const pngEntries = (
-      await Promise.all(
-        allAssets
-          .filter((a) => !a.discarded)
-          .flatMap((a) => {
-            const pngFilename = assetFilename(a);
-            return pngFilename && a.file_path ? [{ asset: a, pngFilename }] : [];
-          })
-          .map(async ({ asset, pngFilename }) => {
-            const buffer = await downloadAsset(supabase, asset.file_path);
-            if (!buffer) return null;
-            const exported = await exportBufferFor(buffer, !!asset.export_as_jpg);
-            return { filename: exportFilenameFor(pngFilename, !!asset.export_as_jpg), buffer: exported };
-          }),
-      )
-    ).filter((entry): entry is { filename: string; buffer: Buffer } => entry != null);
+    if (formatsToProduce.length === 0) {
+      throw new Error("No hay formatos disponibles para producir (todos bloqueados o sin especificación IAB).");
+    }
 
-    // Claude Vision recibe estos mismos buffers como imágenes (assetBuffers,
-    // ver adaptHtml5WithVision) — no se vuelven a descargar por formato.
-    const assetBuffers = new Map(pngEntries.map((entry) => [entry.filename, entry.buffer]));
+    // Assets ya descargados/exportados, cacheados por PSD — evita
+    // redescargar los mismos buffers para cada formato asignado al mismo
+    // master-base, y garantiza que nunca se mezclan con los de otro PSD.
+    const assetBuffersByPsd = new Map<string, Map<string, Buffer>>();
+    async function assetBuffersForPsd(psdId: string): Promise<Map<string, Buffer>> {
+      const cached = assetBuffersByPsd.get(psdId);
+      if (cached) return cached;
+      const scoped = allAssets.filter((a) => a.source_psd_id === psdId);
+      const buffers = await downloadAssetBuffers(scoped, supabase);
+      assetBuffersByPsd.set(psdId, buffers);
+      return buffers;
+    }
 
-    // Assets que se reencuadran por formato con FLUX Kontext antes de pasarlos
-    // a Claude Vision (ver loop más abajo) — el resto se reutiliza tal cual.
-    // Reencuadre con FLUX Kontext solo para la capa que el usuario marcó
-    // explícitamente como JPG (toggle en el editor de capas) — decisión
-    // explícita del usuario en vez de inferir "es fondo" por classification,
-    // y el umbral de área descarta capas JPG pequeñas (p. ej. un logo) que no
-    // tiene sentido reencuadrar.
-    const cropTargets = allAssets.filter(
-      (a) =>
-        !a.discarded &&
-        a.export_as_jpg === true &&
-        a.layer_bounds &&
-        a.layer_bounds.width * a.layer_bounds.height >= 10000,
-    );
+    // Screenshot del master-base ya renderizado — cacheado por PSD; solo se
+    // calcula para los formatos que de verdad necesitan Nivel 2 (FLUX +
+    // Claude Vision), nunca para match exacto o Nivel 1 (escalado puro).
+    const masterRenderedByPsd = new Map<string, Buffer>();
+    async function masterRenderedForPsd(psdMaster: PsdMaster): Promise<Buffer> {
+      const cached = masterRenderedByPsd.get(psdMaster.psdId);
+      if (cached) return cached;
+      const buffers = await assetBuffersForPsd(psdMaster.psdId);
+      const inlined = inlineAssetsAsDataUrls(psdMaster.html, buffers);
+      const rendered = await renderInlinedHtmlToImage(inlined, psdMaster.width, psdMaster.height, {
+        forceAnimationEnd: true,
+      });
+      masterRenderedByPsd.set(psdMaster.psdId, rendered);
+      return rendered;
+    }
+
+    const cropTargetsByPsd = new Map<string, ProjectAsset[]>();
+    function cropTargetsForPsd(psdId: string): ProjectAsset[] {
+      const cached = cropTargetsByPsd.get(psdId);
+      if (cached) return cached;
+      // Reencuadre con FLUX Kontext solo para la capa que el usuario marcó
+      // explícitamente como JPG (toggle en el editor de capas) — decisión
+      // explícita en vez de inferir "es fondo" por classification, y el
+      // umbral de área descarta capas JPG pequeñas (p. ej. un logo).
+      const targets = allAssets.filter(
+        (a) =>
+          a.source_psd_id === psdId &&
+          !a.discarded &&
+          a.export_as_jpg === true &&
+          a.layer_bounds &&
+          a.layer_bounds.width * a.layer_bounds.height >= 10000,
+      );
+      cropTargetsByPsd.set(psdId, targets);
+      return targets;
+    }
 
     const zipEntries: ZipFileEntry[] = [];
     const manifestPieces: ManifestPieceEntry[] = [];
     const total = formatsToProduce.length;
     let producedCount = 0;
-
-    // El master no cambia entre formatos: se renderiza UNA VEZ con
-    // Browserless (no dentro del loop) y se reutiliza como referencia visual
-    // para Claude y como imagen base para el outpainting de cada formato.
-    // Solo hace falta si hay algún formato que SÍ se adapta con FLUX/Claude
-    // (formatsToProduce) — un proyecto donde todos los formatos tienen PSD
-    // propio no necesita este render.
-    let masterRendered: Buffer | null = null;
-    if (formatsToProduce.length > 0) {
-      metadata.set("step", "renderizando-master-con-browserless");
-      metadata.set("progress", 0.1);
-      console.log("Renderizando master con Browserless...");
-      masterRendered = await renderHtmlToImage(payload.projectId, masterEntry.spec.ancho, masterEntry.spec.alto);
-    }
 
     for (let i = 0; i < formatsToProduce.length; i++) {
       const { format, spec } = formatsToProduce[i];
@@ -191,84 +203,114 @@ export const renderAdaptations = task({
       await supabase.from("adstudio_formats").update({ status: "producing" }).eq("id", format.id);
 
       try {
-        // Nivel 1 (ratio parecido al master): escalado geométrico puro, sin
-        // Claude ni FLUX — determinista y siempre disponible. Nivel 2 (ratio
-        // muy distinto): pipeline completo de FLUX Kontext + Claude Vision,
-        // cuyo resultado se guarda además como borrador revisable por chat
-        // (ver lib/adaptation-refine.ts) antes de darlo por definitivo.
-        const level = classifyFormat(masterEntry.spec.ancho, masterEntry.spec.alto, spec.ancho, spec.alto);
-        console.log(`Formato ${n}/${total}: nivel ${level}`);
+        const formatRatio = spec.ancho / spec.alto;
 
-        // Clon por formato: los buffers adaptados no deben filtrarse al resto
-        // de formatos ni al Map global (assetBuffers).
-        const formatAssetBuffers = new Map(assetBuffers);
+        // Override manual (Bloque 15, "Master base" en brief-form.tsx) >
+        // asociación histórica (Bloque 11, source_psd_id) > automático por
+        // ratio más cercano.
+        const overridePsdId = format.master_base_psd_id ?? format.source_psd_id ?? null;
+        const overrideMaster = overridePsdId ? psdMasters.find((m) => m.psdId === overridePsdId) : undefined;
+
+        const assignment = overrideMaster
+          ? { psdId: overrideMaster.psdId, exact: true }
+          : assignMasterToFormat(formatRatio, psdMasters);
+
+        const psdMaster = psdMasters.find((m) => m.psdId === assignment.psdId);
+        if (!psdMaster) throw new Error("No se encontró el master-base asignado a este formato.");
+
+        console.log(
+          `Formato ${n}/${total} (${spec.ancho}x${spec.alto}): master-base PSD ${psdMaster.psdId} ` +
+            `(${psdMaster.width}x${psdMaster.height}), exact=${assignment.exact}`,
+        );
+
+        // CRÍTICO: solo los assets del PSD asignado — nunca se mezclan capas
+        // de otros PSDs para este formato (ver docstring del task arriba).
+        const formatAssetBuffers = new Map(await assetBuffersForPsd(psdMaster.psdId));
+        const psdAssets = allAssets.filter((a) => a.source_psd_id === psdMaster.psdId);
 
         let finalHtml: string;
+        let level: "nivel1" | "nivel2" | null = null;
 
-        if (level === "nivel1") {
-          console.log(`Formato ${n}/${total}: escalado geométrico (Nivel 1)...`);
-          const nivel1 = await generateNivel1Adaptation(
+        if (assignment.exact) {
+          // Match casi exacto: se usa el master de ese PSD directamente — el
+          // escalado geométrico con factores ~1 solo ajusta el px de sobra si
+          // las dimensiones difieren mínimamente, sin reconstruir el HTML.
+          console.log(`Formato ${n}/${total}: match exacto con su master-base, copiando directamente...`);
+          const scaled = await generateNivel1Adaptation(
             payload.projectId,
-            masterHtml,
-            { width: masterEntry.spec.ancho, height: masterEntry.spec.alto },
+            psdMaster.html,
+            { width: psdMaster.width, height: psdMaster.height },
             { width: spec.ancho, height: spec.alto },
-            allAssets,
-            assetBuffers,
+            psdAssets,
+            formatAssetBuffers,
           );
-          for (const [filename, buffer] of nivel1.assetBuffers) {
+          for (const [filename, buffer] of scaled.assetBuffers) {
             formatAssetBuffers.set(filename, buffer);
           }
-          finalHtml = nivel1.html;
+          finalHtml = scaled.html;
         } else {
-          console.log(`Formato ${n}/${total}: reencuadrando assets con FLUX Kontext (Nivel 2)...`);
+          level = classifyFormat(psdMaster.width, psdMaster.height, spec.ancho, spec.alto);
+          console.log(`Formato ${n}/${total}: nivel ${level} (frente a su master-base)`);
 
-          for (let cropIndex = 0; cropIndex < cropTargets.length; cropIndex++) {
-            const asset = cropTargets[cropIndex];
+          if (level === "nivel1") {
+            const nivel1 = await generateNivel1Adaptation(
+              payload.projectId,
+              psdMaster.html,
+              { width: psdMaster.width, height: psdMaster.height },
+              { width: spec.ancho, height: spec.alto },
+              psdAssets,
+              formatAssetBuffers,
+            );
+            for (const [filename, buffer] of nivel1.assetBuffers) {
+              formatAssetBuffers.set(filename, buffer);
+            }
+            finalHtml = nivel1.html;
+          } else {
+            console.log(`Formato ${n}/${total}: reencuadrando assets con FLUX Kontext (Nivel 2)...`);
 
-            // Espaciar llamadas a Replicate cuando hay más de un cropTarget en
-            // este formato — evita el rate limiting de la API de Replicate.
-            if (cropIndex > 0) {
-              await sleep(10_000);
+            const cropTargets = cropTargetsForPsd(psdMaster.psdId);
+            for (let cropIndex = 0; cropIndex < cropTargets.length; cropIndex++) {
+              const asset = cropTargets[cropIndex];
+
+              // Espaciar llamadas a Replicate cuando hay más de un cropTarget
+              // en este formato — evita el rate limiting de la API.
+              if (cropIndex > 0) {
+                await sleep(10_000);
+              }
+
+              const pngFilename = assetFilename(asset);
+              if (!pngFilename || !asset.file_path) continue;
+
+              // Siempre desde el PNG original en Storage (nunca del buffer ya
+              // convertido a JPG) — adaptImageAsset asume PNG.
+              const originalBuffer = await downloadAsset(supabase, asset.file_path);
+              if (!originalBuffer) continue;
+
+              const { width: srcWidth, height: srcHeight } = await sharp(originalBuffer).metadata();
+              if (!srcWidth || !srcHeight) continue;
+
+              const adaptedPng = await adaptImageAsset(originalBuffer, srcWidth, srcHeight, spec.ancho, spec.alto);
+              const adaptedExported = await exportBufferFor(adaptedPng, !!asset.export_as_jpg);
+
+              formatAssetBuffers.set(exportFilenameFor(pngFilename, !!asset.export_as_jpg), adaptedExported);
             }
 
-            const pngFilename = assetFilename(asset);
-            if (!pngFilename || !asset.file_path) continue;
+            console.log("Assets en ZIP para", format.iab_format, ":", Array.from(formatAssetBuffers.keys()));
 
-            // Siempre desde el PNG original en Storage (nunca del buffer ya
-            // convertido a JPG en assetBuffers) — adaptImageAsset asume PNG.
-            const originalBuffer = await downloadAsset(supabase, asset.file_path);
-            if (!originalBuffer) continue;
+            const masterRendered = await masterRenderedForPsd(psdMaster);
 
-            const { width: srcWidth, height: srcHeight } = await sharp(originalBuffer).metadata();
-            if (!srcWidth || !srcHeight) continue;
-
-            const adaptedPng = await adaptImageAsset(originalBuffer, srcWidth, srcHeight, spec.ancho, spec.alto);
-            const adaptedExported = await exportBufferFor(adaptedPng, !!asset.export_as_jpg);
-
-            formatAssetBuffers.set(exportFilenameFor(pngFilename, !!asset.export_as_jpg), adaptedExported);
+            finalHtml = await adaptHtml5WithVision(
+              psdMaster.html,
+              masterRendered,
+              { width: psdMaster.width, height: psdMaster.height },
+              psdAssets,
+              formatAssetBuffers,
+              { width: spec.ancho, height: spec.alto, iabFormat: format.iab_format },
+            );
           }
-
-          // Verificación: formatAssetBuffers debe incluir el fondo/imagen_principal
-          // ya reencuadrado con FLUX (sobreescrito arriba) — un filename ausente
-          // aquí es la causa típica de un ZIP sin imagen de fondo para ese formato.
-          console.log("Assets en ZIP para", format.iab_format, ":", Array.from(formatAssetBuffers.keys()));
-
-          console.log(`Formato ${n}/${total}: generando HTML5...`);
-          finalHtml = await adaptHtml5WithVision(
-            masterHtml,
-            masterRendered!,
-            { width: masterEntry.spec.ancho, height: masterEntry.spec.alto },
-            allAssets,
-            formatAssetBuffers,
-            { width: spec.ancho, height: spec.alto, iabFormat: format.iab_format },
-          );
         }
 
         console.log(`Formato ${n}/${total}: renderizando fallback.jpg (screenshot real del HTML)...`);
-        // El fallback ya no se compone manualmente con Sharp: es un screenshot
-        // real del HTML final (Nivel 1 o Nivel 2) vía Browserless, así que
-        // coincide exactamente con la pieza entregada — ver
-        // lib/render/adaptation-fallback.ts.
         const fallbackJpg = await renderAdaptationFallbackJpg(
           finalHtml,
           { width: spec.ancho, height: spec.alto },
@@ -286,12 +328,10 @@ export const renderAdaptations = task({
             .upload(`${basePath}/fallback.jpg`, fallbackJpg, { contentType: "image/jpeg", upsert: true }),
         ]);
 
-        // El HTML se guarda también en adstudio_masters para poder revisarlo y
-        // pedir cambios por chat (lib/adaptation-refine.ts) desde la tarjeta de
-        // cada pieza en app/project/[id]/delivery — tanto Nivel 1 (escalado
-        // geométrico, status='ready': no es un borrador pendiente de revisión,
-        // ya es la pieza final) como Nivel 2 (status='draft': FLUX + Claude
-        // Vision, revisable antes de darla por definitiva).
+        // Se guarda en adstudio_masters para poder revisarlo/refinarlo por
+        // chat desde app/project/[id]/delivery (ver lib/adaptation-refine.ts)
+        // — 'draft' solo para Nivel 2 (FLUX + Claude Vision, más propenso a
+        // necesitar ajuste); match exacto y Nivel 1 quedan 'ready' de entrada.
         await supabase.from("adstudio_masters").upsert(
           {
             project_id: payload.projectId,
@@ -312,18 +352,17 @@ export const renderAdaptations = task({
         // nuevo rompería esas vistas sin aportar nada.
         await supabase.from("adstudio_formats").update({ status: "ready" }).eq("id", format.id);
 
-        // La pieza se genera UNA SOLA VEZ arriba; aquí solo se copian esos
-        // mismos buffers a la carpeta de cada medio que necesita este tamaño
-        // (adstudio_formats.soportes — dedupe por tamaño, no por soporte+tamaño).
-        const formatPngEntries = pngEntries.map((entry) => ({
-          filename: entry.filename,
-          buffer: formatAssetBuffers.get(entry.filename) ?? entry.buffer,
+        // Solo los assets resueltos para ESTE formato (los del PSD asignado,
+        // con fondo/imagen_principal ya adaptado si aplica) — punto 6: sin
+        // duplicados ni mezcla de otros PSDs en el ZIP.
+        const formatPngEntries = Array.from(formatAssetBuffers.entries()).map(([filename, buffer]) => ({
+          filename,
+          buffer,
         }));
 
-        // Assets del formato (incluye fondo/imagen_principal ya reencuadrados
-        // con FLUX, que solo existían en memoria) — persistidos por format.id
-        // para que app/api/preview/[projectId]/adaptation/[formatId] pueda
-        // servirlos en el iframe de app/project/[id]/delivery.
+        // Persistidos por format.id para que
+        // app/api/preview/[projectId]/adaptation/[formatId] pueda servirlos
+        // en el iframe de app/project/[id]/delivery.
         await Promise.all(
           formatPngEntries.map((png) =>
             supabase.storage
@@ -360,81 +399,6 @@ export const renderAdaptations = task({
         // Un formato con error no debe tirar abajo el resto de la producción.
         await supabase.from("adstudio_formats").update({ status: "incident" }).eq("id", format.id);
         console.error(`Error produciendo ${format.iab_format}:`, formatError);
-      }
-    }
-
-    // Bloque 11: formatos con PSD propio — ya se generaron en
-    // trigger/render-master.ts (index.html + fallback.jpg propios a partir de
-    // sus capas), aquí solo se copian al ZIP de entrega, sin FLUX ni Claude.
-    for (const { format, spec } of formatsWithOwnPsd) {
-      try {
-        const basePath = `${payload.projectId}/masters/${format.id}/${format.iab_format}`;
-
-        const [htmlBuffer, fallbackJpg] = await Promise.all([
-          downloadAsset(supabase, `${basePath}.html`),
-          downloadAsset(supabase, `${basePath}.jpg`),
-        ]);
-
-        if (!htmlBuffer || !fallbackJpg) {
-          throw new Error("El master de este formato todavía no se ha generado.");
-        }
-
-        const ownHtml = htmlBuffer.toString("utf-8");
-
-        const ownPngEntries = (
-          await Promise.all(
-            allAssets
-              .filter((a) => !a.discarded && a.source_psd_id === format.source_psd_id)
-              .flatMap((a) => {
-                const pngFilename = assetFilename(a);
-                return pngFilename && a.file_path ? [{ asset: a, pngFilename }] : [];
-              })
-              .map(async ({ asset, pngFilename }) => {
-                const buffer = await downloadAsset(supabase, asset.file_path);
-                if (!buffer) return null;
-                const exported = await exportBufferFor(buffer, !!asset.export_as_jpg);
-                return { filename: exportFilenameFor(pngFilename, !!asset.export_as_jpg), buffer: exported };
-              }),
-          )
-        ).filter((entry): entry is { filename: string; buffer: Buffer } => entry != null);
-
-        // Mismo criterio que formatPngEntries arriba: persistidos por
-        // format.id para el iframe de preview de adaptaciones.
-        await Promise.all(
-          ownPngEntries.map((png) =>
-            supabase.storage
-              .from("adstudio-projects")
-              .upload(`${payload.projectId}/adaptations/${format.id}/${png.filename}`, png.buffer, {
-                contentType: contentTypeForFilename(png.filename),
-                upsert: true,
-              }),
-          ),
-        );
-
-        const pieceFolders = pieceFoldersFor(format);
-        for (const pieceFolder of pieceFolders) {
-          zipEntries.push({ path: `${pieceFolder}/index.html`, content: ownHtml });
-          for (const png of ownPngEntries) {
-            zipEntries.push({ path: `${pieceFolder}/${png.filename}`, content: png.buffer });
-          }
-          zipEntries.push({ path: `${pieceFolder}/fallback.jpg`, content: fallbackJpg });
-        }
-
-        manifestPieces.push({
-          nombreSoporte: format.nombre_soporte,
-          iabFormat: format.iab_format,
-          width: spec.ancho,
-          height: spec.alto,
-          jpgSizeBytes: fallbackJpg.byteLength,
-          htmlSizeBytes: Buffer.byteLength(ownHtml, "utf8"),
-          incidencias: format.incidencias ?? [],
-          soportes: format.soportes ?? [],
-        });
-
-        producedCount += 1;
-      } catch (formatError) {
-        await supabase.from("adstudio_formats").update({ status: "incident" }).eq("id", format.id);
-        console.error(`Error copiando master propio de ${format.iab_format}:`, formatError);
       }
     }
 

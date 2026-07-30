@@ -86,6 +86,11 @@ create table if not exists adstudio_formats (
   -- layer_type = 'psd') cuando el proyecto tiene varios PSDs independientes
   -- — ver app/api/brief/formats/[formatId] y trigger/render-master.ts.
   source_psd_id uuid default null,
+  -- Bloque 15: override manual del master-base asignado a este formato (ver
+  -- "Master base" en components/project/brief-form.tsx) — si es null, se usa
+  -- la asignación automática por ratio de aspecto (trigger/render-adaptations.ts:
+  -- assignMasterToFormat), o source_psd_id si está seteado.
+  master_base_psd_id uuid default null,
   created_at timestamptz not null default now()
 );
 
@@ -101,6 +106,7 @@ alter table adstudio_formats add column if not exists soportes jsonb default '[]
 update adstudio_formats set soportes = '[]' where soportes is null;
 alter table adstudio_formats alter column soportes set not null;
 alter table adstudio_formats add column if not exists source_psd_id uuid default null;
+alter table adstudio_formats add column if not exists master_base_psd_id uuid default null;
 
 create table if not exists adstudio_assets (
   id uuid primary key default gen_random_uuid(),
@@ -192,12 +198,18 @@ create table if not exists adstudio_masters (
   -- lib/adaptation-refine.ts) y su estado — 'draft' no debe listarse como
   -- master/variante en app/project/[id]/master (ver lib/master.ts:getMasterStatus).
   html text default null,
-  status text not null default 'ready'
+  status text not null default 'ready',
+  -- Bloque 15: PSD (adstudio_assets con layer_type='psd') del que es master
+  -- esta fila — cada PSD subido genera su propio master independiente (ver
+  -- trigger/render-master.ts). Discrimina "master real" (source_psd_id no nulo)
+  -- de "adaptación" (format_id no nulo, source_psd_id nulo) en la misma tabla.
+  source_psd_id uuid default null
 );
 
 alter table adstudio_masters add column if not exists format_id uuid default null references adstudio_formats(id) on delete set null;
 alter table adstudio_masters add column if not exists html text default null;
 alter table adstudio_masters add column if not exists status text not null default 'ready';
+alter table adstudio_masters add column if not exists source_psd_id uuid default null;
 alter table adstudio_masters alter column jpg_path drop not null;
 alter table adstudio_masters alter column png_path drop not null;
 
@@ -244,6 +256,7 @@ create table if not exists adstudio_subscriptions (
 create index if not exists adstudio_formats_project_id_idx on adstudio_formats(project_id);
 create index if not exists adstudio_assets_project_id_idx on adstudio_assets(project_id);
 create index if not exists adstudio_masters_project_id_idx on adstudio_masters(project_id);
+create index if not exists adstudio_masters_source_psd_id_idx on adstudio_masters(source_psd_id);
 create index if not exists adstudio_changes_project_id_idx on adstudio_changes(project_id);
 create index if not exists adstudio_approval_tokens_project_id_idx on adstudio_approval_tokens(project_id);
 create index if not exists adstudio_approval_tokens_token_idx on adstudio_approval_tokens(token);

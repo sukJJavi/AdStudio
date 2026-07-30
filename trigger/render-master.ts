@@ -1,9 +1,8 @@
 import { task, metadata } from "@trigger.dev/sdk/v3";
 import { createTriggerSupabaseClient } from "@/lib/supabase/trigger-client";
-import { getIABFormatById, type IABFormat } from "@/lib/iab/specs";
 import { fontFamilyStack } from "@/lib/fonts";
 import { splitCopy } from "@/lib/render/copy";
-import { pickLargestBy, selectClassifiedAssets, downloadAsset } from "@/lib/render/assets";
+import { selectClassifiedAssets, downloadAsset } from "@/lib/render/assets";
 import { loadGoogleFontWithFallback } from "@/lib/render/font-loader";
 import { renderBannerToPng } from "@/lib/render/jpg-renderer";
 import { renderFallbackFromFrame } from "@/lib/render/fallback-composite";
@@ -32,25 +31,65 @@ function assetFilename(asset: ProjectAsset): string | null {
 }
 
 /**
- * Genera y sube el master (JPG/PNG/HTML5 + ZIP) de un único formato, a
- * partir del subconjunto de capas (`assets`) que le corresponde. Con un
- * único PSD en el proyecto, `assets` es simplemente `allAssets` y el
- * resultado sube a `{project_id}/master/{iab_format}...` como siempre. Con
- * varios PSDs (Bloque 11), cada formato con `source_psd_id` llama a esto
- * con solo sus propias capas y sube a `{project_id}/masters/{format_id}/...`.
+ * Dimensiones del canvas de un PSD concreto (Bloque 15 — cada PSD es un
+ * master independiente): primero su propia metadata (psdWidth/psdHeight, ver
+ * trigger/analyze-psd.ts), con fallback a las dimensiones a nivel proyecto
+ * (psd_width/psd_height) para PSDs analizados antes de que existiera ese
+ * campo por-asset. `null` si no hay ninguna de las dos.
+ */
+function psdDimensions(
+  psdAsset: ProjectAsset,
+  project: { psd_width: number | null; psd_height: number | null },
+): { ancho: number; alto: number } | null {
+  const metadata = psdAsset.metadata as { psdWidth?: number | null; psdHeight?: number | null } | undefined;
+  const ancho = metadata?.psdWidth ?? project.psd_width ?? null;
+  const alto = metadata?.psdHeight ?? project.psd_height ?? null;
+  return ancho && alto ? { ancho, alto } : null;
+}
+
+/** Identificador sintético (no un IAB real) para un master sin formato del plan asociado explícitamente. */
+function syntheticIabFormat(psdAsset: ProjectAsset, dims: { ancho: number; alto: number }): string {
+  return `custom_${dims.ancho}x${dims.alto}_${psdAsset.id.slice(0, 8)}`;
+}
+
+/**
+ * Genera y sube el master (JPG/PNG/HTML5 + ZIP) de un único PSD, a partir del
+ * subconjunto de capas (`assets`) que le corresponde. Bloque 15: cada PSD
+ * subido es un master independiente, identificado por `sourcePsdId` — ya no
+ * hay un único "master del proyecto"; `isPrimary` solo decide cuál de todos
+ * alimenta `adstudio_projects.master_html` (preview principal, chat de
+ * cambios del master y link de aprobación al cliente, que siguen operando a
+ * nivel de proyecto, ver CLAUDE.md).
  */
 async function renderOneMaster(params: {
   projectId: string;
-  format: ProjectFormat;
-  spec: IABFormat;
+  sourcePsdId: string;
+  spec: { ancho: number; alto: number };
+  iabFormat: string;
+  copy: string | null;
+  clickTagUrl: string;
+  /** id real de adstudio_formats cuyo status marcar 'ready' al terminar — null si no hay un formato del plan asociado explícitamente a este PSD. */
+  driverFormatId: string | null;
   assets: ProjectAsset[];
   fontPrimary: string;
   isPrimary: boolean;
   supabase: SupabaseClient;
-  /** Carpeta de Storage donde subir: 'master' (flujo de un único PSD) o 'masters/{format.id}' (multi-PSD). */
-  storageFolder: string;
 }): Promise<void> {
-  const { projectId, format, spec, assets, fontPrimary, isPrimary, supabase, storageFolder } = params;
+  const {
+    projectId,
+    sourcePsdId,
+    spec,
+    iabFormat,
+    copy,
+    clickTagUrl,
+    driverFormatId,
+    assets,
+    fontPrimary,
+    isPrimary,
+    supabase,
+  } = params;
+
+  const storageFolder = `masters/${sourcePsdId}`;
 
   const { byClassification } = selectClassifiedAssets(assets);
 
@@ -71,7 +110,7 @@ async function renderOneMaster(params: {
   const logoAspectRatio =
     logoAsset?.width && logoAsset?.height && logoAsset.height > 0 ? logoAsset.width / logoAsset.height : null;
 
-  const { claim, subclaim, disclaimer } = splitCopy(format.copy ?? null);
+  const { claim, subclaim, disclaimer } = splitCopy(copy);
   const fontFamily = fontFamilyStack(fontPrimary);
 
   const bannerElements = {
@@ -99,18 +138,24 @@ async function renderOneMaster(params: {
   ]);
 
   const animationGuide = await readAnimationGuideText(assets, supabase);
-  const clickTagUrl = format.url_destino ?? "";
 
   const { html, assetFilenames } = await generateHtml5Master(
     projectId,
-    { width: spec.ancho, height: spec.alto, iabFormat: format.iab_format },
+    { width: spec.ancho, height: spec.alto, iabFormat },
     assets,
     animationGuide,
     clickTagUrl,
     supabase,
   );
 
-  await saveHtml5Master(projectId, html, supabase);
+  // El master primario alimenta adstudio_projects.master_html — preview
+  // principal (/api/preview/[projectId]), chat de cambios (lib/master.ts:
+  // refineMasterHtml) y link de aprobación al cliente siguen operando a nivel
+  // de proyecto sobre ESTE master. El resto de PSDs guarda su HTML solo en su
+  // propia fila de adstudio_masters (ver más abajo), sin tocar este campo.
+  if (isPrimary) {
+    await saveHtml5Master(projectId, html, supabase);
+  }
 
   // Fix 3: el nombre "lógico" (con la extensión correcta) es la clave — el PNG
   // original en Storage nunca cambia de nombre/formato; la conversión a JPG
@@ -143,14 +188,15 @@ async function renderOneMaster(params: {
 
   const zipBuffer = await buildZipBuffer(zipEntries);
 
-  const basePath = `${projectId}/${storageFolder}/${format.iab_format}`;
+  const basePath = `${projectId}/${storageFolder}/${iabFormat}`;
   const folder = `${projectId}/${storageFolder}`;
   // El HTML5 ya NO se sirve desde Storage (las signed URLs de Supabase Storage
   // añaden `Content-Disposition: attachment`, forzando la descarga en vez de
-  // renderizar en el iframe) — se sirve desde adstudio_projects.master_html
-  // (ver saveHtml5Master arriba) vía app/api/preview/[projectId]/route.ts.
-  // Aquí solo queda el `.html` suelto por formato, para quien descargue del
-  // Storage directamente fuera de la app.
+  // renderizar en el iframe) — el master primario se sirve desde
+  // adstudio_projects.master_html (ver saveHtml5Master arriba); todos (incluido
+  // el primario) también quedan en adstudio_masters.html para su propio preview
+  // por PSD (app/api/preview/[projectId]/master/[psdId]). Aquí solo queda el
+  // `.html` suelto por PSD, para quien descargue del Storage directamente.
   const htmlBuffer = Buffer.from(html, "utf-8");
 
   await Promise.all([
@@ -178,22 +224,23 @@ async function renderOneMaster(params: {
   await supabase.from("adstudio_masters").upsert(
     {
       project_id: projectId,
-      iab_format: format.iab_format,
-      format_id: format.id,
+      iab_format: iabFormat,
+      format_id: driverFormatId,
+      source_psd_id: sourcePsdId,
       jpg_path: `${basePath}.jpg`,
       png_path: `${basePath}.png`,
       width: spec.ancho,
       height: spec.alto,
       jpg_size_bytes: jpgBuffer.byteLength,
       is_primary: isPrimary,
+      html,
+      status: "ready",
     },
     { onConflict: "project_id,iab_format" },
   );
 
-  // Con PSD propio (multi-PSD), este formato ya está producido — no pasa por
-  // trigger/render-adaptations.ts (ver cropTargets ahí).
-  if (format.source_psd_id) {
-    await supabase.from("adstudio_formats").update({ status: "ready" }).eq("id", format.id);
+  if (driverFormatId) {
+    await supabase.from("adstudio_formats").update({ status: "ready" }).eq("id", driverFormatId);
   }
 }
 
@@ -208,51 +255,63 @@ export const renderMaster = task({
     const [{ data: assets }, { data: formats }, { data: project }] = await Promise.all([
       supabase.from("adstudio_assets").select("*").eq("project_id", payload.projectId),
       supabase.from("adstudio_formats").select("*").eq("project_id", payload.projectId),
-      supabase.from("adstudio_projects").select("font_primary").eq("id", payload.projectId).single(),
+      supabase
+        .from("adstudio_projects")
+        .select("font_primary, psd_width, psd_height")
+        .eq("id", payload.projectId)
+        .single(),
     ]);
 
     const allAssets = (assets ?? []) as ProjectAsset[];
     const allFormats = (formats ?? []) as ProjectFormat[];
     const fontPrimary = project?.font_primary ?? "Inter";
+    const projectPsdDims = { psd_width: project?.psd_width ?? null, psd_height: project?.psd_height ?? null };
+
+    const psdAssets = allAssets.filter((a) => a.layer_type === "psd");
+
+    if (psdAssets.length === 0) {
+      throw new Error("El proyecto no tiene ningún PSD subido.");
+    }
 
     metadata.set("step", "seleccionando-formato");
     metadata.set("progress", 0.1);
 
-    // Bloque 11: formatos con PSD propio (proyecto con varios PSDs
-    // independientes) — cada uno genera su propio master a partir solo de
-    // sus capas. Si el caller pide un formato explícito (variante manual
-    // desde master-view.tsx) se respeta esa petición puntual en vez de
-    // regenerar todos los masters con PSD.
-    const formatsWithPsd = allFormats.filter((f) => f.source_psd_id);
-
-    if (!payload.iabFormatId && formatsWithPsd.length > 1) {
-      let producedAny = false;
-      for (let i = 0; i < formatsWithPsd.length; i++) {
-        const format = formatsWithPsd[i];
-        const spec = getIABFormatById(format.iab_format);
-        if (!spec) continue;
-
-        metadata.set("step", `generando-master-${format.iab_format}`);
-        metadata.set("progress", i / formatsWithPsd.length);
-
-        const scopedAssets = allAssets.filter((a) => a.source_psd_id === format.source_psd_id);
-
-        await renderOneMaster({
-          projectId: payload.projectId,
-          format,
-          spec,
-          assets: scopedAssets,
-          fontPrimary,
-          isPrimary: format.is_master,
-          supabase,
-          storageFolder: `masters/${format.id}`,
-        });
-        producedAny = true;
+    // Regeneración puntual de UN master concreto — "Regenerar master" /
+    // "Generar segunda variante" en components/project/master-view.tsx.
+    // payload.iabFormatId identifica el adstudio_formats.iab_format a
+    // regenerar; su PSD asociado (source_psd_id) es el master-base, o el
+    // primer PSD subido si no tiene ninguno asociado explícitamente.
+    if (payload.iabFormatId) {
+      const format = allFormats.find((f) => f.iab_format === payload.iabFormatId);
+      if (!format) {
+        throw new Error("El formato indicado no existe en este proyecto.");
       }
 
-      if (!producedAny) {
-        throw new Error("Ninguno de los formatos con PSD propio tiene especificación IAB válida.");
+      const psdAsset = (format.source_psd_id && psdAssets.find((p) => p.id === format.source_psd_id)) || psdAssets[0];
+      const dims = psdDimensions(psdAsset, projectPsdDims);
+
+      if (!dims) {
+        throw new Error("No se pudieron determinar las dimensiones del PSD para este formato.");
       }
+
+      const scopedAssets = allAssets.filter((a) => a.source_psd_id === psdAsset.id);
+
+      metadata.set("step", "descargando-assets-y-fuente");
+      metadata.set("progress", 0.25);
+
+      await renderOneMaster({
+        projectId: payload.projectId,
+        sourcePsdId: psdAsset.id,
+        spec: dims,
+        iabFormat: format.iab_format,
+        copy: format.copy,
+        clickTagUrl: format.url_destino ?? "",
+        driverFormatId: format.id,
+        assets: scopedAssets,
+        fontPrimary,
+        isPrimary: payload.isPrimary ?? false,
+        supabase,
+      });
 
       metadata.set("step", "completado");
       metadata.set("progress", 1);
@@ -262,54 +321,60 @@ export const renderMaster = task({
         .update({ status: "master_ready", master_run_id: null })
         .eq("id", payload.projectId);
 
-      return { projectId: payload.projectId, iabFormat: formatsWithPsd.map((f) => f.iab_format).join(",") };
+      return { projectId: payload.projectId, iabFormat: format.iab_format };
     }
 
-    // Caso actual (un único PSD, o generación puntual de un formato/variante
-    // concreto pedida por payload.iabFormatId): comportamiento idéntico al de
-    // antes de Bloque 11.
-    const formatsWithSpec = pickLargestBy(
-      allFormats
-        .map((format) => ({ format, spec: getIABFormatById(format.iab_format) }))
-        .filter((x): x is { format: ProjectFormat; spec: IABFormat } => x.spec != null),
-      (x) => x.spec.ancho * x.spec.alto,
-    );
+    // Generación completa: un master INDEPENDIENTE por cada PSD subido
+    // (Bloque 15) — ya no solo el marcado is_master o el de mayor área.
+    const masterFormat = allFormats.find((f) => f.is_master) ?? null;
+    const primaryPsdId =
+      (masterFormat?.source_psd_id && psdAssets.some((p) => p.id === masterFormat.source_psd_id)
+        ? masterFormat.source_psd_id
+        : null) ?? psdAssets[0].id;
 
-    // El formato master es el marcado explícitamente por el usuario en el brief
-    // (adstudio_formats.is_master, ver app/project/[id]/brief) — solo si ninguno
-    // está marcado (planes creados antes de este campo) se cae al de mayor área.
-    const masterFlagged = formatsWithSpec.find((x) => x.format.is_master);
-    const selected = payload.iabFormatId
-      ? (formatsWithSpec.find((x) => x.format.iab_format === payload.iabFormatId) ?? formatsWithSpec[0])
-      : (masterFlagged ?? formatsWithSpec[0]);
+    let producedAny = false;
 
-    if (!selected) {
-      throw new Error("El proyecto no tiene formatos con especificación IAB válida.");
+    for (let i = 0; i < psdAssets.length; i++) {
+      const psdAsset = psdAssets[i];
+
+      metadata.set("step", `generando-master-psd-${i + 1}-de-${psdAssets.length}`);
+      metadata.set("progress", i / psdAssets.length);
+
+      const dims = psdDimensions(psdAsset, projectPsdDims);
+      if (!dims) {
+        console.error(`No se pudieron determinar las dimensiones del PSD ${psdAsset.id}, se omite su master.`);
+        continue;
+      }
+
+      // El "formato conductor" (driver) de este PSD es el que el usuario
+      // asoció explícitamente en el brief (Bloque 11) — aporta copy/clickTag/
+      // nombre IAB real. Sin asociación explícita, el master se genera igual
+      // (Bloque 15: cada PSD es un master, tenga o no un formato del plan
+      // vinculado), con copy vacío y un identificador sintético.
+      const driverFormat = allFormats.find((f) => f.source_psd_id === psdAsset.id) ?? null;
+      const iabFormat = driverFormat?.iab_format ?? syntheticIabFormat(psdAsset, dims);
+      const scopedAssets = allAssets.filter((a) => a.source_psd_id === psdAsset.id);
+
+      await renderOneMaster({
+        projectId: payload.projectId,
+        sourcePsdId: psdAsset.id,
+        spec: dims,
+        iabFormat,
+        copy: driverFormat?.copy ?? null,
+        clickTagUrl: driverFormat?.url_destino ?? "",
+        driverFormatId: driverFormat?.id ?? null,
+        assets: scopedAssets,
+        fontPrimary,
+        isPrimary: psdAsset.id === primaryPsdId,
+        supabase,
+      });
+
+      producedAny = true;
     }
 
-    const { format, spec } = selected;
-
-    // Si este formato tiene un PSD propio (único PSD del proyecto asociado a
-    // él, o generación puntual de un formato con PSD), sus capas son las que
-    // comparten ese source_psd_id; si no, se usan todas (comportamiento
-    // histórico de un único PSD sin asociar explícitamente).
-    const scopedAssets = format.source_psd_id
-      ? allAssets.filter((a) => a.source_psd_id === format.source_psd_id)
-      : allAssets;
-
-    metadata.set("step", "descargando-assets-y-fuente");
-    metadata.set("progress", 0.25);
-
-    await renderOneMaster({
-      projectId: payload.projectId,
-      format,
-      spec,
-      assets: scopedAssets,
-      fontPrimary,
-      isPrimary: payload.isPrimary ?? false,
-      supabase,
-      storageFolder: "master",
-    });
+    if (!producedAny) {
+      throw new Error("Ningún PSD del proyecto tiene dimensiones válidas para generar su master.");
+    }
 
     metadata.set("step", "completado");
     metadata.set("progress", 1);
@@ -319,6 +384,6 @@ export const renderMaster = task({
       .update({ status: "master_ready", master_run_id: null })
       .eq("id", payload.projectId);
 
-    return { projectId: payload.projectId, iabFormat: format.iab_format };
+    return { projectId: payload.projectId, psds: psdAssets.length };
   },
 });

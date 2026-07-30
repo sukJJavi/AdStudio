@@ -80,6 +80,8 @@ export type ProjectFormat = {
   soportes: string[];
   /** PSD propio de este formato (adstudio_assets.id con layer_type='psd') cuando el proyecto tiene varios PSDs independientes — ver app/api/brief/formats/[formatId]. */
   source_psd_id: string | null;
+  /** Override manual del master-base asignado por ratio (ver trigger/render-adaptations.ts:assignMasterToFormat) — null = automático. */
+  master_base_psd_id: string | null;
   created_at: string;
 };
 
@@ -101,6 +103,9 @@ export type TextLayerMetadata = {
   filename?: string | null;
   /** Color de relleno del texto extraído del PSD (rgb(...) o #FFFFFF si no se pudo resolver), ver trigger/analyze-psd.ts. */
   textColor?: string | null;
+  /** Dimensiones del canvas de ESTE PSD (solo en el asset layer_type='psd'), ver trigger/analyze-psd.ts — Bloque 15: cada PSD es un master independiente. */
+  psdWidth?: number | null;
+  psdHeight?: number | null;
 };
 
 /** { x, y, width, height } en píxeles relativos al canvas — ver adstudio_assets.layer_bounds. */
@@ -208,6 +213,8 @@ export type MasterRecord = {
   html: string | null;
   /** 'draft' = adaptación Nivel 2 pendiente de refinar por chat; 'ready' = master normal, ya no se toca aquí. */
   status: "draft" | "ready";
+  /** PSD (adstudio_assets.id, layer_type='psd') del que es master esta fila — no nulo únicamente en masters reales (ver trigger/render-master.ts), null en adaptaciones. */
+  source_psd_id: string | null;
 };
 
 export type Subscription = {

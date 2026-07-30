@@ -42,6 +42,8 @@ type SoporteRow = {
   soportes: string[];
   /** PSD propio de este formato (id de adstudio_assets con layer_type='psd') cuando el proyecto tiene varios PSDs. */
   source_psd_id: string | null;
+  /** Override manual del master-base asignado por ratio (null = automático) — ver trigger/render-adaptations.ts:assignMasterToFormat. */
+  master_base_psd_id: string | null;
 };
 
 /** nombre_soporte pasa a ser siempre el tamaño (ver trigger/parse-media-plan.ts) — se deriva del iab_format, no se edita a mano. */
@@ -62,6 +64,7 @@ function formatToRow(f: ProjectFormat): SoporteRow {
     is_master: f.is_master,
     soportes: Array.isArray(f.soportes) ? f.soportes : [],
     source_psd_id: f.source_psd_id ?? null,
+    master_base_psd_id: f.master_base_psd_id ?? null,
   };
 }
 
@@ -104,6 +107,7 @@ function newRow(): SoporteRow {
     is_master: false,
     soportes: [],
     source_psd_id: null,
+    master_base_psd_id: null,
   };
 }
 
@@ -221,6 +225,22 @@ export function BriefForm({
     }
   }
 
+  /** Bloque 15: override manual del master-base de un formato (null = automático por ratio, ver assignMasterToFormat). */
+  async function setMasterBasePsd(targetKey: string, psdId: string | null) {
+    updateRow(targetKey, { master_base_psd_id: psdId });
+
+    const targetRow = rows.find((r) => r.key === targetKey);
+    if (targetRow?.id) {
+      await fetch(`/api/brief/formats/${targetRow.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ master_base_psd_id: psdId }),
+      }).catch(() => {
+        // Best-effort: si falla, "Guardar brief" vuelve a mandar el valor actual.
+      });
+    }
+  }
+
   const masterRow = rows.find((r) => r.is_master) ?? null;
   const masterDimensiones = masterRow ? resolveFormatDimensions(masterRow.iab_format) : null;
   const psdMismatchWarning =
@@ -313,6 +333,7 @@ export function BriefForm({
         is_master: r.is_master,
         soportes: r.soportes,
         source_psd_id: r.source_psd_id,
+        master_base_psd_id: r.master_base_psd_id,
       })),
     };
 
@@ -600,6 +621,7 @@ export function BriefForm({
                 <TableHead>Soporte</TableHead>
                 <TableHead>Formato IAB</TableHead>
                 <TableHead>Dimensiones</TableHead>
+                {psdAssets.length > 1 && <TableHead>Master base</TableHead>}
                 <TableHead className="w-24">Peso máx (KB)</TableHead>
                 <TableHead>URL destino</TableHead>
                 <TableHead className="w-28">Versiones</TableHead>
@@ -680,6 +702,26 @@ export function BriefForm({
                       <TableCell className="text-sm text-muted-foreground">
                         {dimensiones ? `${dimensiones.ancho}x${dimensiones.alto}px` : "—"}
                       </TableCell>
+                      {psdAssets.length > 1 && (
+                        <TableCell>
+                          <Select
+                            value={row.master_base_psd_id ?? "auto"}
+                            onValueChange={(value) => setMasterBasePsd(row.key, value === "auto" ? null : value)}
+                          >
+                            <SelectTrigger className="w-40">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="auto">Automático (más cercano)</SelectItem>
+                              {psdAssets.map((psd) => (
+                                <SelectItem key={psd.id} value={psd.id}>
+                                  {psd.layer_name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </TableCell>
+                      )}
                       <TableCell>
                         <Input
                           type="number"
@@ -719,7 +761,7 @@ export function BriefForm({
                     </TableRow>
                     {rowAnalisis && rowAnalisis.incidencias.length > 0 && (
                       <TableRow className="bg-muted/40">
-                        <TableCell colSpan={8}>
+                        <TableCell colSpan={psdAssets.length > 1 ? 9 : 8}>
                           <ul className="flex flex-col gap-1 text-sm">
                             {rowAnalisis.incidencias.map((inc, i) => (
                               <li key={i}>

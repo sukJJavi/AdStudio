@@ -224,6 +224,17 @@ export const analyzePsd = task({
         .update({ psd_width: psd.width, psd_height: psd.height })
         .eq("id", payload.projectId);
 
+      // Bloque 15: dimensiones POR PSD, en el propio asset (layer_type='psd')
+      // — necesarias para el ratio de asignación de formatos a master-base
+      // (trigger/render-adaptations.ts:assignMasterToFormat), a diferencia del
+      // campo de proyecto de arriba, que un segundo PSD sobrescribe.
+      await supabase
+        .from("adstudio_assets")
+        .update({
+          metadata: { ...(psdAsset.metadata as Record<string, unknown>), psdWidth: psd.width, psdHeight: psd.height },
+        })
+        .eq("id", psdAsset.id);
+
       const flattened: FlattenedLayer[] = [];
       flattenLayers(psd.children ?? [], { frame: null, persistent: false }, flattened);
 
