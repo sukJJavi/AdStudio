@@ -5,8 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Html5ChangeChat } from "@/components/project/html5-change-chat";
-import { cn } from "@/lib/utils";
-import type { MasterChangeEntry, MasterStatusResponse } from "@/lib/master";
+import type { MasterChangeEntry, MasterStatusResponse, MasterWithUrls } from "@/lib/master";
 
 const STEP_LABELS: Record<string, string> = {
   "leyendo-assets": "Leyendo capas del PSD...",
@@ -17,10 +16,98 @@ const STEP_LABELS: Record<string, string> = {
   completado: "Completado",
 };
 
+const MAX_PREVIEW_WIDTH = 400;
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Escalado del iframe manteniendo proporción, tope MAX_PREVIEW_WIDTH de ancho — mismo patrón que delivery-view.tsx. */
+function scaledDimensions(width: number, height: number): { width: number; height: number; scale: number } {
+  const scale = Math.min(1, MAX_PREVIEW_WIDTH / width);
+  return { width: Math.round(width * scale), height: Math.round(height * scale), scale };
+}
+
+/**
+ * Tarjeta de un master (uno por PSD subido, ver trigger/render-master.ts) —
+ * mismo patrón visual que PieceCard en delivery-view.tsx. Bloque 15: ya no
+ * hay distinción "master principal" vs "otros" — todos se muestran igual,
+ * cada uno con su propio preview y chat de cambios independientes.
+ */
+function MasterCard({
+  projectId,
+  master,
+  psdName,
+  regenerateNonce,
+  initialChanges,
+}: {
+  projectId: string;
+  master: MasterWithUrls;
+  psdName: string;
+  /** Bump global tras "Regenerar todos los masters" — fuerza recarga de TODOS los iframes. */
+  regenerateNonce: number;
+  /** Historial de cambios real solo para el master primario (adstudio_changes no tiene columna por-PSD, ver lib/master.ts). */
+  initialChanges: MasterChangeEntry[];
+}) {
+  const [chatOpen, setChatOpen] = useState(false);
+  const [reloadNonce, setReloadNonce] = useState(0);
+
+  const { width: boxWidth, height: boxHeight, scale } = scaledDimensions(master.width, master.height);
+  const previewUrl = master.sourcePsdId
+    ? `/api/preview/${projectId}/master/${master.sourcePsdId}`
+    : `/api/preview/${projectId}`;
+  const nonce = regenerateNonce + reloadNonce;
+  const iframeSrc = nonce > 0 ? `${previewUrl}?v=${nonce}` : previewUrl;
+
+  return (
+    <Card>
+      <CardContent className="space-y-2 pt-4">
+        <div
+          className="relative overflow-hidden rounded-md border border-border bg-[#070A0F]"
+          style={{ width: boxWidth, height: boxHeight }}
+        >
+          <iframe
+            src={iframeSrc}
+            title={`Preview del master — ${psdName}`}
+            style={{
+              width: master.width,
+              height: master.height,
+              border: 0,
+              transform: `scale(${scale})`,
+              transformOrigin: "0 0",
+              pointerEvents: "none",
+            }}
+          />
+          {/* Overlay clicable: abre el HTML5 a tamaño real en una pestaña nueva. */}
+          <button
+            type="button"
+            aria-label={`Abrir master ${psdName} a tamaño real`}
+            onClick={() => window.open(previewUrl, "_blank", "noopener,noreferrer")}
+            className="absolute inset-0 cursor-zoom-in bg-transparent"
+          />
+        </div>
+        <p className="text-sm font-medium">{psdName}</p>
+        <p className="text-xs text-muted-foreground">
+          {master.width}×{master.height}px
+          {master.jpgSizeBytes != null ? ` · ${formatBytes(master.jpgSizeBytes)}` : ""}
+        </p>
+        <Button variant="outline" size="sm" className="w-full" onClick={() => setChatOpen((v) => !v)}>
+          {chatOpen ? "Ocultar chat de cambios" : "Ajustar este master"}
+        </Button>
+        {chatOpen && (
+          <Html5ChangeChat
+            projectId={projectId}
+            endpoint="/api/master/refine"
+            extraBody={{ sourcePsdId: master.sourcePsdId }}
+            initialChanges={master.isPrimary ? initialChanges : []}
+            onApplied={() => setReloadNonce((n) => n + 1)}
+          />
+        )}
+      </CardContent>
+    </Card>
+  );
 }
 
 export function MasterView({
@@ -30,9 +117,8 @@ export function MasterView({
   initialStatus,
   formatsSummary,
   hasUnblockedFormat,
-  secondLargestFormat,
   initialChanges,
-  formatLabelsByIabFormat = {},
+  psdNamesById = {},
 }: {
   projectId: string;
   cliente: string;
@@ -40,17 +126,16 @@ export function MasterView({
   initialStatus: MasterStatusResponse;
   formatsSummary: { ready: number; blocked: number };
   hasUnblockedFormat: boolean;
-  secondLargestFormat: { iabFormat: string; nombreSoporte: string } | null;
   initialChanges: MasterChangeEntry[];
-  /** Bloque 11: nombre de soporte y si tiene PSD propio, por iab_format — para etiquetar variantes multi-PSD. */
-  formatLabelsByIabFormat?: Record<string, { nombreSoporte: string; ownPsd: boolean }>;
+  /** PSD (adstudio_assets.id) -> layer_name, para etiquetar cada tarjeta del grid. */
+  psdNamesById?: Record<string, string>;
 }) {
   const [status, setStatus] = useState(initialStatus);
   const [generating, setGenerating] = useState(false);
-  const [generatingVariant, setGeneratingVariant] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
 
-  const [regeneratingMaster, setRegeneratingMaster] = useState(false);
+  const [regenerating, setRegenerating] = useState(false);
+  const [regenerateNonce, setRegenerateNonce] = useState(0);
 
   const [sendingApproval, setSendingApproval] = useState(false);
   const [approvalError, setApprovalError] = useState<string | null>(null);
@@ -59,13 +144,6 @@ export function MasterView({
   // desincronizar el render de servidor/cliente (hydration mismatch).
   const [origin, setOrigin] = useState<string | null>(null);
   useEffect(() => setOrigin(window.location.origin), []);
-
-  const [previewNonce, setPreviewNonce] = useState(0);
-  // Bloque 15: nonce de recarga del iframe por master secundario (uno por
-  // PSD, ver trigger/render-master.ts) — cada uno tiene su propio chat de
-  // cambios independiente (components/project/html5-change-chat.tsx).
-  const [otherPreviewNonces, setOtherPreviewNonces] = useState<Record<string, number>>({});
-  const [openChatMasterId, setOpenChatMasterId] = useState<string | null>(null);
 
   const isGenerating = status.projectStatus === "master_generating";
   const hasMaster = status.masters.length > 0;
@@ -87,41 +165,9 @@ export function MasterView({
     return () => clearInterval(interval);
   }, [status.projectStatus, projectId]);
 
-  async function handleGenerate(iabFormatId?: string, isPrimary = true) {
-    const setBusy = isPrimary ? setGenerating : setGeneratingVariant;
-    setBusy(true);
-    setGenError(null);
-
-    try {
-      const res = await fetch("/api/master/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ projectId, iabFormatId, isPrimary }),
-      });
-      const data = await res.json();
-
-      if (!res.ok) {
-        setGenError(data.error ?? "No se pudo lanzar la generación del master.");
-        setBusy(false);
-        return;
-      }
-
-      setStatus((prev) => ({ ...prev, projectStatus: "master_generating" }));
-    } catch {
-      setGenError("Error de red al lanzar la generación del master.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  /**
-   * A diferencia de handleGenerate, no toca `status.projectStatus` mientras regenera:
-   * el master ya generado se mantiene visible (el usuario ve el botón "Regenerando..."
-   * sin que la vista salte a la tarjeta de progreso de la primera generación) y solo
-   * al terminar se refresca el status y se fuerza la recarga del iframe con el nonce.
-   */
-  async function handleRegenerateMaster() {
-    setRegeneratingMaster(true);
+  /** Generación inicial — sin iabFormatId, trigger/render-master.ts genera UN master por cada PSD subido. */
+  async function handleGenerate() {
+    setGenerating(true);
     setGenError(null);
 
     try {
@@ -133,7 +179,39 @@ export function MasterView({
       const data = await res.json();
 
       if (!res.ok) {
-        setGenError(data.error ?? "No se pudo regenerar el master.");
+        setGenError(data.error ?? "No se pudo lanzar la generación de los masters.");
+        setGenerating(false);
+        return;
+      }
+
+      setStatus((prev) => ({ ...prev, projectStatus: "master_generating" }));
+    } catch {
+      setGenError("Error de red al lanzar la generación de los masters.");
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  /**
+   * Regenera TODOS los masters (uno por PSD). A diferencia de handleGenerate,
+   * no toca `status.projectStatus` mientras regenera: los masters ya
+   * generados se mantienen visibles y solo al terminar se refresca el status
+   * y se fuerza la recarga de todos los iframes con el nonce.
+   */
+  async function handleRegenerateAll() {
+    setRegenerating(true);
+    setGenError(null);
+
+    try {
+      const res = await fetch("/api/master/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectId, isPrimary: true }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        setGenError(data.error ?? "No se pudieron regenerar los masters.");
         return;
       }
 
@@ -147,11 +225,11 @@ export function MasterView({
         break;
       }
 
-      setPreviewNonce((n) => n + 1);
+      setRegenerateNonce((n) => n + 1);
     } catch {
-      setGenError("Error de red al regenerar el master.");
+      setGenError("Error de red al regenerar los masters.");
     } finally {
-      setRegeneratingMaster(false);
+      setRegenerating(false);
     }
   }
 
@@ -198,11 +276,6 @@ export function MasterView({
     }
   }
 
-  const primaryMaster = status.masters.find((m) => m.isPrimary) ?? status.masters[0] ?? null;
-  const otherMasters = status.masters.filter((m) => m.id !== primaryMaster?.id);
-  const variantAlreadyExists =
-    secondLargestFormat != null && status.masters.some((m) => m.iabFormat === secondLargestFormat.iabFormat);
-
   return (
     <div className="space-y-6">
       <div>
@@ -211,25 +284,98 @@ export function MasterView({
           {producto ? ` · ${producto}` : ""}
         </h1>
         <p className="text-sm text-muted-foreground">
-          Previsualiza y aprueba el master antes de lanzar la producción de adaptaciones.
+          Previsualiza y aprueba los masters antes de lanzar la producción de adaptaciones.
         </p>
       </div>
 
+      {!hasMaster && !isGenerating && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Generar masters</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              {formatsSummary.ready} formato{formatsSummary.ready === 1 ? "" : "s"} listo
+              {formatsSummary.ready === 1 ? "" : "s"} · {formatsSummary.blocked} bloqueado
+              {formatsSummary.blocked === 1 ? "" : "s"}
+            </p>
+            {hasUnblockedFormat ? (
+              <Button onClick={handleGenerate} disabled={generating}>
+                {generating ? "Lanzando..." : "Generar masters"}
+              </Button>
+            ) : (
+              <p className="text-sm text-destructive">
+                Todos los formatos del plan están bloqueados por incidencias críticas. Resuelve el análisis antes
+                de generar los masters.
+              </p>
+            )}
+            {genError && <p className="text-sm text-destructive">{genError}</p>}
+          </CardContent>
+        </Card>
+      )}
+
+      {isGenerating && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Generando masters...</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+              <div
+                className="h-full bg-primary transition-all"
+                style={{ width: `${Math.round((status.progress ?? 0) * 100)}%` }}
+              />
+            </div>
+            <p className="text-sm text-muted-foreground">
+              {status.step ? (STEP_LABELS[status.step] ?? status.step) : "Preparando..."}
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {hasMaster && !isGenerating && (
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <Button variant="secondary" onClick={handleRegenerateAll} disabled={regenerating}>
+              {regenerating ? "Regenerando..." : "Regenerar todos los masters"}
+            </Button>
+            {genError && <p className="text-sm text-destructive">{genError}</p>}
+          </div>
+
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {status.masters.map((master) => (
+              <MasterCard
+                key={master.id}
+                projectId={projectId}
+                master={master}
+                psdName={
+                  (master.sourcePsdId && psdNamesById[master.sourcePsdId]) || master.iabFormat
+                }
+                regenerateNonce={regenerateNonce}
+                initialChanges={initialChanges}
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
       <Card>
         <CardHeader>
-          <CardTitle>Enlace de aprobación del cliente</CardTitle>
+          <CardTitle>Enviar al cliente para aprobación</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
+          <p className="text-sm text-muted-foreground">
+            El enlace de aprobación muestra todos los masters del proyecto juntos para que el cliente apruebe el
+            conjunto.
+          </p>
+
           {status.approval.state === "none" && (
             <>
-              <p className="text-sm text-muted-foreground">
-                Todavía no se ha generado un enlace de aprobación para este proyecto.
-              </p>
               <Button onClick={handleSendApproval} disabled={sendingApproval || !hasMaster}>
                 {sendingApproval ? "Generando..." : "Generar link"}
               </Button>
               {!hasMaster && (
-                <p className="text-xs text-muted-foreground">Genera el master antes de crear el link.</p>
+                <p className="text-xs text-muted-foreground">Genera los masters antes de crear el link.</p>
               )}
             </>
           )}
@@ -267,234 +413,20 @@ export function MasterView({
                     </Button>
                   </div>
                 )}
+
+                <Button variant="outline" size="sm" onClick={handleSendApproval} disabled={sendingApproval}>
+                  {sendingApproval ? "Generando..." : "Generar nuevo link"}
+                </Button>
               </>
             );
           })()}
 
-          {status.approval.state !== "none" && (
-            <Button variant="outline" size="sm" onClick={handleSendApproval} disabled={sendingApproval}>
-              {sendingApproval ? "Generando..." : "Generar nuevo link"}
-            </Button>
-          )}
-
           {approvalError && <p className="text-sm text-destructive">{approvalError}</p>}
+          {status.projectStatus === "approved" && (
+            <p className="text-sm text-[#34C759]">El cliente ya aprobó los masters.</p>
+          )}
         </CardContent>
       </Card>
-
-      {!hasMaster && !isGenerating && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Generar master</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <p className="text-sm text-muted-foreground">
-              {formatsSummary.ready} formato{formatsSummary.ready === 1 ? "" : "s"} listo
-              {formatsSummary.ready === 1 ? "" : "s"} · {formatsSummary.blocked} bloqueado
-              {formatsSummary.blocked === 1 ? "" : "s"}
-            </p>
-            {hasUnblockedFormat ? (
-              <Button onClick={() => handleGenerate()} disabled={generating}>
-                {generating ? "Lanzando..." : "Generar master"}
-              </Button>
-            ) : (
-              <p className="text-sm text-destructive">
-                Todos los formatos del plan están bloqueados por incidencias críticas. Resuelve el análisis antes
-                de generar el master.
-              </p>
-            )}
-            {genError && <p className="text-sm text-destructive">{genError}</p>}
-          </CardContent>
-        </Card>
-      )}
-
-      {isGenerating && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Generando master...</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
-              <div
-                className="h-full bg-primary transition-all"
-                style={{ width: `${Math.round((status.progress ?? 0) * 100)}%` }}
-              />
-            </div>
-            <p className="text-sm text-muted-foreground">
-              {status.step ? (STEP_LABELS[status.step] ?? status.step) : "Preparando..."}
-            </p>
-          </CardContent>
-        </Card>
-      )}
-
-      {hasMaster && !isGenerating && primaryMaster && (
-        <div className="space-y-4">
-          <div className={cn("grid gap-4", status.hasHtml5 ? "lg:grid-cols-2" : "grid-cols-1")}>
-            <Card className="border-[#232935] bg-[#12161F]">
-              <CardHeader>
-                <CardTitle className="font-display">Master</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {status.hasHtml5 ? (
-                  <div className="flex flex-wrap items-start gap-4 bg-[#070A0F] p-4">
-                    <div
-                      className="max-h-[70vh] max-w-full border border-[#232935]"
-                      style={{ borderRadius: 0, overflow: "hidden" }}
-                    >
-                      <iframe
-                        src={`/api/preview/${projectId}${previewNonce > 0 ? `?v=${previewNonce}` : ""}`}
-                        width={primaryMaster.width}
-                        height={primaryMaster.height}
-                        style={{ border: 0, display: "block", borderRadius: 0 }}
-                        title="Preview del master (HTML5)"
-                      />
-                    </div>
-                    {primaryMaster.jpgUrl && (
-                      <div className="flex flex-col items-start gap-1">
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
-                          src={primaryMaster.jpgUrl}
-                          alt="Fallback JPG del master"
-                          className="w-32 border border-[#232935]"
-                        />
-                        <p className="text-xs text-[#9AA3B2]">
-                          JPG alternativo
-                          {primaryMaster.jpgSizeBytes != null ? ` (${formatBytes(primaryMaster.jpgSizeBytes)})` : ""}
-                        </p>
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="max-h-[70vh] overflow-auto border border-[#232935] bg-[#070A0F] p-4">
-                    {primaryMaster.jpgUrl && (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img src={primaryMaster.jpgUrl} alt="Preview del master" className="block" />
-                    )}
-                  </div>
-                )}
-                {status.hasHtml5 && (
-                  <p className="text-xs text-[#9AA3B2]">
-                    El iframe solo verifica estructura y animación — los assets (PNG/JPG) no cargan aquí
-                    porque se referencian por nombre de fichero relativo. Descarga el ZIP para ver el
-                    banner completo.
-                  </p>
-                )}
-                <p className="font-mono text-sm text-[#9AA3B2]">
-                  {primaryMaster.width}×{primaryMaster.height}px
-                  {status.zipSizeBytes != null ? ` · ZIP ${formatBytes(status.zipSizeBytes)}` : ""}
-                </p>
-
-                <div className="flex flex-wrap items-center gap-3">
-                  {secondLargestFormat && !variantAlreadyExists && (
-                    <Button
-                      variant="outline"
-                      disabled={generatingVariant || regeneratingMaster}
-                      onClick={() => handleGenerate(secondLargestFormat.iabFormat, false)}
-                    >
-                      {generatingVariant
-                        ? "Lanzando..."
-                        : `Generar segunda variante (${secondLargestFormat.nombreSoporte})`}
-                    </Button>
-                  )}
-
-                  <Button variant="secondary" onClick={handleRegenerateMaster} disabled={regeneratingMaster}>
-                    {regeneratingMaster ? "Regenerando..." : "Regenerar master"}
-                  </Button>
-
-                  <Button onClick={handleSendApproval} disabled={sendingApproval || regeneratingMaster}>
-                    {sendingApproval ? "Enviando..." : "Enviar al cliente para aprobación"}
-                  </Button>
-                </div>
-
-                {genError && <p className="text-sm text-destructive">{genError}</p>}
-                {status.projectStatus === "approved" && (
-                  <p className="text-sm text-[#34C759]">El cliente ya aprobó este master.</p>
-                )}
-              </CardContent>
-            </Card>
-
-            {status.hasHtml5 && (
-              <Html5ChangeChat
-                projectId={projectId}
-                endpoint="/api/master/refine"
-                initialChanges={initialChanges}
-                disabled={regeneratingMaster}
-                onApplied={() => {
-                  // El iframe apunta siempre a /api/preview/[projectId] — el HTML ya
-                  // se actualizó en el servidor, así que solo hace falta forzar que
-                  // el navegador vuelva a pedirlo en vez de servir la copia cacheada.
-                  setPreviewNonce((n) => n + 1);
-                }}
-              />
-            )}
-          </div>
-
-          {otherMasters.length > 0 && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Otros masters (uno por PSD)</CardTitle>
-              </CardHeader>
-              <CardContent className="grid gap-4 sm:grid-cols-2">
-                {otherMasters.map((variant) => {
-                  const label = formatLabelsByIabFormat[variant.iabFormat];
-                  const nonce = otherPreviewNonces[variant.id] ?? 0;
-                  const chatOpen = openChatMasterId === variant.id;
-                  return (
-                    <div key={variant.id} className="space-y-2">
-                      {variant.sourcePsdId ? (
-                        <div className="overflow-hidden rounded-md border border-[#232935] bg-[#070A0F]">
-                          <iframe
-                            src={`/api/preview/${projectId}/master/${variant.sourcePsdId}${nonce > 0 ? `?v=${nonce}` : ""}`}
-                            width={variant.width}
-                            height={variant.height}
-                            style={{ border: 0, display: "block", width: "100%", height: "auto", aspectRatio: `${variant.width}/${variant.height}` }}
-                            title={`Preview del master — ${label?.nombreSoporte ?? variant.iabFormat}`}
-                          />
-                        </div>
-                      ) : (
-                        variant.jpgUrl && (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={variant.jpgUrl}
-                            alt={`Variante ${variant.iabFormat}`}
-                            className="w-full rounded-md border border-border"
-                          />
-                        )
-                      )}
-                      <p className="text-xs text-muted-foreground">
-                        {label?.nombreSoporte ?? variant.iabFormat} · {variant.width}×{variant.height}px
-                        {variant.jpgSizeBytes != null ? ` · ${formatBytes(variant.jpgSizeBytes)}` : ""}
-                      </p>
-                      {variant.sourcePsdId && (
-                        <>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="w-full"
-                            onClick={() => setOpenChatMasterId(chatOpen ? null : variant.id)}
-                          >
-                            {chatOpen ? "Ocultar chat de cambios" : "Ajustar este master"}
-                          </Button>
-                          {chatOpen && (
-                            <Html5ChangeChat
-                              projectId={projectId}
-                              endpoint="/api/master/refine"
-                              extraBody={{ sourcePsdId: variant.sourcePsdId }}
-                              initialChanges={[]}
-                              onApplied={() =>
-                                setOtherPreviewNonces((prev) => ({ ...prev, [variant.id]: (prev[variant.id] ?? 0) + 1 }))
-                              }
-                            />
-                          )}
-                        </>
-                      )}
-                    </div>
-                  );
-                })}
-              </CardContent>
-            </Card>
-          )}
-        </div>
-      )}
     </div>
   );
 }

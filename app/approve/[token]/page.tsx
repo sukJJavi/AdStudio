@@ -1,10 +1,59 @@
-import { getApprovalContext } from "@/lib/approval";
+import { getApprovalContext, type ApprovalMasterEntry } from "@/lib/approval";
 import { ApprovalActions } from "@/components/approve/approval-actions";
+
+const MAX_PREVIEW_WIDTH = 400;
 
 function CenteredMessage({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex min-h-screen items-center justify-center px-6 text-center text-sm text-muted-foreground">
       {children}
+    </div>
+  );
+}
+
+/** Mismo patrón de escalado que components/project/delivery-view.tsx — tope MAX_PREVIEW_WIDTH manteniendo proporción. */
+function scaledDimensions(width: number, height: number): { width: number; height: number; scale: number } {
+  const scale = Math.min(1, MAX_PREVIEW_WIDTH / width);
+  return { width: Math.round(width * scale), height: Math.round(height * scale), scale };
+}
+
+/** Tarjeta de un master en la aprobación pública — todos se muestran igual (Bloque 15: uno por PSD subido). */
+function MasterCard({ projectId, master }: { projectId: string; master: ApprovalMasterEntry }) {
+  const { width: boxWidth, height: boxHeight, scale } = scaledDimensions(master.width, master.height);
+  const previewUrl = master.isPrimary
+    ? `/api/preview/${projectId}`
+    : `/api/preview/${projectId}/master/${master.sourcePsdId}`;
+
+  return (
+    <div className="space-y-2">
+      {master.hasHtml5 ? (
+        <div
+          className="relative overflow-hidden rounded-md border border-border bg-white"
+          style={{ width: boxWidth, height: boxHeight }}
+        >
+          <iframe
+            src={previewUrl}
+            title={`Preview del master (${master.width}x${master.height})`}
+            style={{
+              width: master.width,
+              height: master.height,
+              border: 0,
+              transform: `scale(${scale})`,
+              transformOrigin: "0 0",
+            }}
+          />
+        </div>
+      ) : (
+        master.jpgUrl && (
+          <div className="overflow-hidden rounded-md border border-border">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src={master.jpgUrl} alt="Master" className="block w-full" />
+          </div>
+        )
+      )}
+      <p className="text-xs text-muted-foreground">
+        {master.width}×{master.height}px
+      </p>
     </div>
   );
 }
@@ -25,7 +74,7 @@ export default async function ApprovePage({
   }
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-2xl flex-col gap-6 px-6 py-10">
+    <div className="mx-auto flex min-h-screen max-w-4xl flex-col gap-6 px-6 py-10">
       <div>
         <p className="text-xs text-muted-foreground">Aprobación de master</p>
         <h1 className="text-xl font-semibold">
@@ -34,27 +83,18 @@ export default async function ApprovePage({
         </h1>
       </div>
 
-      {context.hasHtml5 ? (
-        <div className="border border-border" style={{ borderRadius: 0, overflow: "hidden" }}>
-          <iframe
-            src={`/api/preview/${context.projectId}`}
-            width={context.width ?? undefined}
-            height={context.height ?? undefined}
-            style={{ display: "block", border: "none", borderRadius: 0, margin: 0, padding: 0 }}
-            title="Preview del master (HTML5)"
-          />
-        </div>
+      {context.masters.length === 0 ? (
+        <p className="text-sm text-muted-foreground">Todavía no hay ningún master generado.</p>
       ) : (
-        context.masterJpgUrl && (
-          <div className="overflow-auto rounded-lg border border-border">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={context.masterJpgUrl} alt="Master" className="block w-full" />
-          </div>
-        )
+        <div className="grid gap-4 sm:grid-cols-2">
+          {context.masters.map((master, i) => (
+            <MasterCard key={master.sourcePsdId ?? i} projectId={context.projectId} master={master} />
+          ))}
+        </div>
       )}
 
       {context.state === "approved" ? (
-        <p className="text-sm text-green-600">Master aprobado. El equipo comenzará las adaptaciones.</p>
+        <p className="text-sm text-green-600">Masters aprobados. El equipo comenzará las adaptaciones.</p>
       ) : (
         <ApprovalActions token={token} />
       )}

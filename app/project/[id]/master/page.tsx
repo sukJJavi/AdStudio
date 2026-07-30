@@ -1,7 +1,7 @@
 import { getProject } from "@/lib/projects";
 import { getProjectFormats } from "@/lib/formats";
 import { getProjectAssets } from "@/lib/assets";
-import { getMasterChanges, getMasterStatus, rankFormatsByArea } from "@/lib/master";
+import { getMasterChanges, getMasterStatus } from "@/lib/master";
 import { unblockedFormats } from "@/lib/iab/incident-analyzer";
 import { FontSelector } from "@/components/project/font-selector";
 import { MasterView } from "@/components/project/master-view";
@@ -23,10 +23,6 @@ export default async function MasterPage({
   ]);
 
   const unblocked = unblockedFormats(formats);
-  const rankedUnblocked = rankFormatsByArea(unblocked);
-  const secondLargest = rankedUnblocked[1]
-    ? { iabFormat: rankedUnblocked[1].format.iab_format, nombreSoporte: rankedUnblocked[1].format.nombre_soporte }
-    : null;
 
   const detectedFonts = Array.from(
     new Set(
@@ -39,11 +35,10 @@ export default async function MasterPage({
 
   const previewText = formats.find((f) => f.copy?.trim())?.copy?.split("\n")[0]?.trim() || "Tu claim aparecerá aquí";
 
-  // Bloque 11: con varios PSDs, cada formato con source_psd_id tiene su propio
-  // master — se usa para etiquetar cada variante en "Otras variantes" con el
-  // nombre del soporte real en vez de solo el iab_format técnico.
-  const formatLabelsByIabFormat = Object.fromEntries(
-    formats.map((f) => [f.iab_format, { nombreSoporte: f.nombre_soporte, ownPsd: !!f.source_psd_id }]),
+  // Bloque 15: cada master del grid se etiqueta con el nombre del PSD del que
+  // proviene (adstudio_assets.layer_name), no con el iab_format técnico.
+  const psdNamesById = Object.fromEntries(
+    assets.filter((a) => a.layer_type === "psd").map((a) => [a.id, a.layer_name ?? "PSD"]),
   );
 
   return (
@@ -72,9 +67,8 @@ export default async function MasterPage({
         }
         formatsSummary={{ ready: unblocked.length, blocked: formats.length - unblocked.length }}
         hasUnblockedFormat={unblocked.length > 0}
-        secondLargestFormat={secondLargest}
         initialChanges={masterChanges}
-        formatLabelsByIabFormat={formatLabelsByIabFormat}
+        psdNamesById={psdNamesById}
       />
     </div>
   );

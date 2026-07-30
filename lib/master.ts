@@ -73,15 +73,15 @@ export async function triggerMasterGeneration(
     };
   }
 
-  // El formato master es el que el usuario marcó explícitamente en el brief
-  // (adstudio_formats.is_master) — fallback al de mayor área si ninguno lo está
-  // (planes creados antes de que existiera este campo, ver Bloque 9 en CLAUDE.md).
-  const iabFormatId =
-    options?.iabFormatId ?? unblocked.find((f) => f.is_master)?.iab_format ?? rankFormatsByArea(unblocked)[0]?.format.iab_format;
-
+  // Bloque 15: sin iabFormatId explícito (generación inicial / "Regenerar
+  // TODOS los masters"), NO se resuelve ninguno — trigger/render-master.ts
+  // solo entra en su bucle "un master por cada PSD subido" cuando
+  // payload.iabFormatId es undefined. Resolver aquí un iabFormatId por
+  // defecto (bug previo) forzaba SIEMPRE la rama de un único formato/PSD,
+  // dejando ese bucle inalcanzable desde la UI.
   const handle = await tasks.trigger("render-master", {
     projectId,
-    iabFormatId,
+    iabFormatId: options?.iabFormatId,
     isPrimary: options?.isPrimary ?? true,
   });
 

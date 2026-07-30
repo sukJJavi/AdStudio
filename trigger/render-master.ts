@@ -259,6 +259,14 @@ async function renderOneMaster(params: {
 
 export const renderMaster = task({
   id: "render-master",
+  // Bloque 15 fix: cada renderOneMaster (Claude Vision para el HTML5, fuentes,
+  // Sharp, uploads) puede tardar 1-2 min por PSD; con varios PSDs el job
+  // supera el maxDuration global de trigger.config.ts (300s) y Trigger.dev
+  // mata el proceso a mitad del for-loop — sin lanzar excepción, así que
+  // ningún try/catch lo detecta y los PSDs siguientes se quedan sin master
+  // (síntoma: el log nunca llega a mostrar la 2ª iteración). Mismo criterio
+  // que trigger/render-adaptations.ts.
+  maxDuration: 900,
   run: async (payload: RenderMasterPayload) => {
     const supabase = createTriggerSupabaseClient();
 

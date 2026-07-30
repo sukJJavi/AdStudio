@@ -77,6 +77,16 @@ export async function createApprovalLink(
 export type { ApprovalStatus } from "@/lib/approval-status";
 export { getApprovalStatus } from "@/lib/approval-status";
 
+export type ApprovalMasterEntry = {
+  sourcePsdId: string | null;
+  width: number;
+  height: number;
+  jpgUrl: string | null;
+  /** true si esta fila tiene HTML5 propio — el iframe usa /api/preview/[projectId]/master/[psdId] (o /api/preview/[projectId] para el primario). */
+  hasHtml5: boolean;
+  isPrimary: boolean;
+};
+
 export type ApprovalContext =
   | { state: "not_found" }
   | { state: "expired" }
@@ -85,11 +95,8 @@ export type ApprovalContext =
       projectId: string;
       cliente: string;
       producto: string | null;
-      masterJpgUrl: string | null;
-      /** true si `adstudio_projects.master_html` tiene contenido — el iframe lo sirve vía `/api/preview/[projectId]`. */
-      hasHtml5: boolean;
-      width: number | null;
-      height: number | null;
+      /** Bloque 15: TODOS los masters del proyecto (uno por PSD subido) — el cliente aprueba el conjunto. */
+      masters: ApprovalMasterEntry[];
     };
 
 /** Lectura pública (sin sesión) del estado de un token de aprobación. Usa service-role. */
@@ -116,32 +123,42 @@ export async function getApprovalContext(token: string): Promise<ApprovalContext
 
   if (projectError || !project) return { state: "not_found" };
 
-  const { data: masterRow } = await supabase
+  // Bloque 15: todos los masters reales del proyecto (uno por PSD subido, ver
+  // trigger/render-master.ts) — el link de aprobación los muestra todos en
+  // grid, no solo el primario.
+  const { data: masterRows } = await supabase
     .from("adstudio_masters")
-    .select("jpg_path, width, height")
+    .select("jpg_path, width, height, html, is_primary, source_psd_id")
     .eq("project_id", tokenRow.project_id)
-    .eq("is_primary", true)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+    .not("source_psd_id", "is", null)
+    .order("created_at", { ascending: false });
 
-  let masterJpgUrl: string | null = null;
-  if (masterRow?.jpg_path) {
-    const { data: signed } = await supabase.storage
-      .from("adstudio-projects")
-      .createSignedUrl(masterRow.jpg_path, MASTER_PREVIEW_SIGNED_URL_TTL_SECONDS);
-    masterJpgUrl = signed?.signedUrl ?? null;
-  }
+  const masters: ApprovalMasterEntry[] = await Promise.all(
+    (masterRows ?? []).map(async (m) => {
+      let jpgUrl: string | null = null;
+      if (m.jpg_path) {
+        const { data: signed } = await supabase.storage
+          .from("adstudio-projects")
+          .createSignedUrl(m.jpg_path as string, MASTER_PREVIEW_SIGNED_URL_TTL_SECONDS);
+        jpgUrl = signed?.signedUrl ?? null;
+      }
+      return {
+        sourcePsdId: m.source_psd_id as string | null,
+        width: m.width as number,
+        height: m.height as number,
+        jpgUrl,
+        hasHtml5: m.is_primary ? !!project.master_html : !!m.html,
+        isPrimary: !!m.is_primary,
+      };
+    }),
+  );
 
   return {
     state: tokenRow.approved_at ? "approved" : "pending",
     projectId: tokenRow.project_id as string,
     cliente: project.cliente,
     producto: project.producto,
-    masterJpgUrl,
-    hasHtml5: !!project.master_html,
-    width: masterRow?.width ?? null,
-    height: masterRow?.height ?? null,
+    masters,
   };
 }
 
