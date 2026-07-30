@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Html5ChangeChat } from "@/components/project/html5-change-chat";
 import type { DeliveryPiece, DeliveryZipInfo } from "@/lib/delivery";
 
 const MAX_PREVIEW_WIDTH = 400;
@@ -21,11 +22,21 @@ function scaledDimensions(width: number | null, height: number | null): { width:
   return { width: Math.round(nativeWidth * scale), height: Math.round(nativeHeight * scale), scale };
 }
 
-function PiecePreview({ projectId, piece }: { projectId: string; piece: DeliveryPiece }) {
+function PiecePreview({
+  projectId,
+  piece,
+  reloadNonce,
+}: {
+  projectId: string;
+  piece: DeliveryPiece;
+  /** Fuerza la recarga del iframe tras aplicar un cambio por chat (ver PieceCard). */
+  reloadNonce: number;
+}) {
   const nativeWidth = piece.width ?? 300;
   const nativeHeight = piece.height ?? 250;
   const { width: boxWidth, height: boxHeight, scale } = scaledDimensions(piece.width, piece.height);
   const previewUrl = `/api/preview/${projectId}/adaptation/${piece.id}`;
+  const iframeSrc = reloadNonce > 0 ? `${previewUrl}?v=${reloadNonce}` : previewUrl;
 
   return (
     <div
@@ -33,7 +44,7 @@ function PiecePreview({ projectId, piece }: { projectId: string; piece: Delivery
       style={{ width: boxWidth, height: boxHeight }}
     >
       <iframe
-        src={previewUrl}
+        src={iframeSrc}
         title={`Preview HTML5 — ${piece.nombreSoporte}`}
         style={{
           width: nativeWidth,
@@ -52,6 +63,44 @@ function PiecePreview({ projectId, piece }: { projectId: string; piece: Delivery
         className="absolute inset-0 cursor-zoom-in bg-transparent"
       />
     </div>
+  );
+}
+
+/**
+ * Tarjeta de una pieza de entrega: preview + botón "Ajustar esta pieza" que
+ * expande el chat de cambios (Html5ChangeChat) sobre /api/production/refine,
+ * el mismo endpoint que ya usaba app/project/[id]/production/[formatId] — el
+ * chat de revisión ahora vive aquí, donde el usuario realmente ve las piezas,
+ * en vez de en Production. Aplica a cualquier formato (Nivel 1 o Nivel 2, ver
+ * trigger/render-adaptations.ts), no solo a los borradores Nivel 2.
+ */
+function PieceCard({ projectId, piece }: { projectId: string; piece: DeliveryPiece }) {
+  const [chatOpen, setChatOpen] = useState(false);
+  const [reloadNonce, setReloadNonce] = useState(0);
+
+  return (
+    <Card>
+      <CardContent className="space-y-2 pt-4">
+        <PiecePreview projectId={projectId} piece={piece} reloadNonce={reloadNonce} />
+        <p className="text-sm font-medium">{piece.nombreSoporte}</p>
+        <p className="text-xs text-muted-foreground">
+          {piece.iabFormat} · {piece.width}×{piece.height}px
+          {piece.jpgSizeBytes != null ? ` · ${formatBytes(piece.jpgSizeBytes)}` : ""}
+        </p>
+        <Button variant="outline" size="sm" className="w-full" onClick={() => setChatOpen((v) => !v)}>
+          {chatOpen ? "Ocultar chat de cambios" : "Ajustar esta pieza"}
+        </Button>
+        {chatOpen && (
+          <Html5ChangeChat
+            projectId={projectId}
+            formatId={piece.id}
+            endpoint="/api/production/refine"
+            initialChanges={piece.initialChanges}
+            onApplied={() => setReloadNonce((n) => n + 1)}
+          />
+        )}
+      </CardContent>
+    </Card>
   );
 }
 
@@ -114,16 +163,7 @@ export function DeliveryView({
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {pieces.map((piece) => (
-            <Card key={piece.id}>
-              <CardContent className="space-y-2 pt-4">
-                <PiecePreview projectId={projectId} piece={piece} />
-                <p className="text-sm font-medium">{piece.nombreSoporte}</p>
-                <p className="text-xs text-muted-foreground">
-                  {piece.iabFormat} · {piece.width}×{piece.height}px
-                  {piece.jpgSizeBytes != null ? ` · ${formatBytes(piece.jpgSizeBytes)}` : ""}
-                </p>
-              </CardContent>
-            </Card>
+            <PieceCard key={piece.id} projectId={projectId} piece={piece} />
           ))}
         </div>
       )}

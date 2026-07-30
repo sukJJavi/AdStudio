@@ -286,26 +286,25 @@ export const renderAdaptations = task({
             .upload(`${basePath}/fallback.jpg`, fallbackJpg, { contentType: "image/jpeg", upsert: true }),
         ]);
 
-        // Nivel 2 — "master secundario": el HTML se guarda también en
-        // adstudio_masters (status='draft') para poder revisarlo y pedir
-        // cambios por chat (lib/adaptation-refine.ts) desde
-        // app/project/[id]/production/[formatId] antes de la entrega final.
-        // Nivel 1 no lo necesita: es determinista y no se revisa por chat.
-        if (level === "nivel2") {
-          await supabase.from("adstudio_masters").upsert(
-            {
-              project_id: payload.projectId,
-              format_id: format.id,
-              iab_format: format.iab_format,
-              width: spec.ancho,
-              height: spec.alto,
-              jpg_path: `${basePath}/fallback.jpg`,
-              html: finalHtml,
-              status: "draft",
-            },
-            { onConflict: "project_id,iab_format" },
-          );
-        }
+        // El HTML se guarda también en adstudio_masters para poder revisarlo y
+        // pedir cambios por chat (lib/adaptation-refine.ts) desde la tarjeta de
+        // cada pieza en app/project/[id]/delivery — tanto Nivel 1 (escalado
+        // geométrico, status='ready': no es un borrador pendiente de revisión,
+        // ya es la pieza final) como Nivel 2 (status='draft': FLUX + Claude
+        // Vision, revisable antes de darla por definitiva).
+        await supabase.from("adstudio_masters").upsert(
+          {
+            project_id: payload.projectId,
+            format_id: format.id,
+            iab_format: format.iab_format,
+            width: spec.ancho,
+            height: spec.alto,
+            jpg_path: `${basePath}/fallback.jpg`,
+            html: finalHtml,
+            status: level === "nivel2" ? "draft" : "ready",
+          },
+          { onConflict: "project_id,iab_format" },
+        );
 
         // "ready" (no "producido"): es el valor de FormatStatus que ya
         // consume el resto de la UI (p. ej. production-view.tsx cuenta

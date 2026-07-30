@@ -139,19 +139,32 @@ export async function getMasterStatus(projectId: string): Promise<MasterStatusRe
 
   if (projectError || !project) return null;
 
-  // Excluye los borradores de adaptación Nivel 2 (status='draft', ver
-  // trigger/render-adaptations.ts y lib/adaptation-refine.ts) — comparten esta
-  // misma tabla pero no son masters/variantes del proyecto, así que no deben
-  // listarse aquí.
-  const { data: masterRows } = await supabase
-    .from("adstudio_masters")
-    .select("*")
-    .eq("project_id", projectId)
-    .neq("status", "draft")
-    .order("created_at", { ascending: false });
+  // Excluye las adaptaciones (Nivel 1 con status='ready' y Nivel 2 con
+  // status='draft', ver trigger/render-adaptations.ts y
+  // lib/adaptation-refine.ts) — comparten esta misma tabla pero no son
+  // masters/variantes del proyecto, así que no deben listarse aquí. Una fila
+  // es un master real si no tiene format_id (flujo histórico de un único PSD)
+  // o si su formato es el marcado is_master o tiene PSD propio (Bloque 11).
+  const [{ data: masterRows }, { data: formatRows }] = await Promise.all([
+    supabase
+      .from("adstudio_masters")
+      .select("*")
+      .eq("project_id", projectId)
+      .neq("status", "draft")
+      .order("created_at", { ascending: false }),
+    supabase.from("adstudio_formats").select("id, is_master, source_psd_id").eq("project_id", projectId),
+  ]);
+
+  const masterFormatIds = new Set(
+    (formatRows ?? []).filter((f) => f.is_master || f.source_psd_id).map((f) => f.id as string),
+  );
+
+  const filteredMasterRows = (masterRows ?? []).filter(
+    (m) => !m.format_id || masterFormatIds.has(m.format_id as string),
+  );
 
   const masters: MasterWithUrls[] = await Promise.all(
-    ((masterRows ?? []) as MasterRecord[]).map(async (m) => {
+    (filteredMasterRows as MasterRecord[]).map(async (m) => {
       const [jpgSigned, pngSigned] = await Promise.all([
         supabase.storage.from("adstudio-projects").createSignedUrl(m.jpg_path, SIGNED_URL_TTL_SECONDS),
         supabase.storage.from("adstudio-projects").createSignedUrl(m.png_path, SIGNED_URL_TTL_SECONDS),

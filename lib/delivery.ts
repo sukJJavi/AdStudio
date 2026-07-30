@@ -1,6 +1,8 @@
 import { createSessionSupabaseClient } from "@/lib/supabase/server-session";
 import { getIABFormatById } from "@/lib/iab/specs";
 import { campaignSlug } from "@/lib/export/zip";
+import { getAdaptationChanges } from "@/lib/adaptation-refine";
+import type { MasterChangeEntry } from "@/lib/master";
 import type { Project, ProjectFormat } from "@/lib/types";
 
 const PIECE_SIGNED_URL_TTL_SECONDS = 600;
@@ -15,6 +17,8 @@ export type DeliveryPiece = {
   height: number | null;
   fallbackJpgUrl: string | null;
   jpgSizeBytes: number | null;
+  /** Historial de cambios del chat de refinamiento (`/api/production/refine`) — ver components/project/delivery-view.tsx. */
+  initialChanges: MasterChangeEntry[];
 };
 
 export type DeliveryZipInfo = {
@@ -64,6 +68,11 @@ export async function getDeliveryInfo(projectId: string): Promise<DeliveryInfo |
 
       const jpgSizeBytes = listing?.find((f) => f.name === `${filenamePrefix}.jpg`)?.metadata?.size ?? null;
 
+      // Chat de refinamiento por pieza (Bloque 14) — disponible tanto para
+      // Nivel 1 como Nivel 2 (ver trigger/render-adaptations.ts), no solo
+      // Nivel 2 como antes.
+      const initialChanges = await getAdaptationChanges(projectId, format.id, supabase);
+
       return {
         id: format.id,
         nombreSoporte: format.nombre_soporte,
@@ -72,6 +81,7 @@ export async function getDeliveryInfo(projectId: string): Promise<DeliveryInfo |
         height: spec?.alto ?? null,
         fallbackJpgUrl: signed?.signedUrl ?? null,
         jpgSizeBytes,
+        initialChanges,
       };
     }),
   );

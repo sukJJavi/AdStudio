@@ -1,10 +1,13 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type Anthropic from "@anthropic-ai/sdk";
 import { createClaudeClient } from "@/lib/claude/client";
-import { ensureAdBorder, sanitizeHtml, stripCodeFence } from "@/lib/render/html5-generator";
+import { ensureAdBorder, sanitizeHtml, stripCodeFence, inlineAssetsAsDataUrls } from "@/lib/render/html5-generator";
+import { renderInlinedHtmlToImage } from "@/lib/render/browserless-renderer";
 import { REFINE_SYSTEM_PROMPT, TIER_ALLOWED_CHANGE_TYPES, TIER_ROUNDS_LIMIT, type MasterChangeEntry } from "@/lib/master";
 import { downloadAsset } from "@/lib/render/assets";
 import { exportFilenameFor } from "@/lib/render/export-format";
 import { renderAdaptationFallbackJpg } from "@/lib/render/adaptation-fallback";
+import { rebuildDeliveryZip } from "@/lib/export/delivery-zip";
 import type { ChangeType, ProjectAsset, TextLayerMetadata, Tier } from "@/lib/types";
 
 /** El chat de cambios sobre una adaptación siempre es un cambio tipo C (revisión), igual que sobre el master principal. */
@@ -20,13 +23,38 @@ export class AdaptationRefineError extends Error {
 }
 
 /**
- * Regenera el fallback.jpg de un borrador Nivel 2 tras un cambio por chat —
- * "hermana" de lib/master.ts:regenerateMasterFallback. Los assets se
- * descargan de `{projectId}/adaptations/{formatId}/{filename}` (no del PSD
- * original): esa carpeta ya tiene, por formato, el fondo/imagen_principal
- * reencuadrado con FLUX que persiste trigger/render-adaptations.ts — usar el
- * PSD original perdería ese reencuadre. Best-effort: un fallo aquí no debe
- * deshacer el cambio de HTML ya guardado.
+ * Assets ya adaptados de un formato concreto — descargados de
+ * `{projectId}/adaptations/{formatId}/{filename}` (no del PSD original): esa
+ * carpeta ya tiene, por formato, el fondo/imagen_principal reencuadrado con
+ * FLUX que persiste trigger/render-adaptations.ts — usar el PSD original
+ * perdería ese reencuadre. Reutilizado tanto para regenerar el fallback.jpg
+ * tras un cambio como para el screenshot de contexto que ve Claude antes de
+ * aplicar el siguiente cambio.
+ */
+async function downloadFormatAssetBuffers(
+  projectId: string,
+  formatId: string,
+  supabase: SupabaseClient,
+): Promise<Map<string, Buffer>> {
+  const { data: assetRows } = await supabase.from("adstudio_assets").select("*").eq("project_id", projectId);
+  const allAssets = (assetRows ?? []) as ProjectAsset[];
+
+  const assetBuffers = new Map<string, Buffer>();
+  for (const asset of allAssets) {
+    if (asset.discarded) continue;
+    const filename = (asset.metadata as TextLayerMetadata | undefined)?.filename;
+    if (!filename) continue;
+    const exported = exportFilenameFor(filename, !!asset.export_as_jpg);
+    const buffer = await downloadAsset(supabase, `${projectId}/adaptations/${formatId}/${exported}`);
+    if (buffer) assetBuffers.set(exported, buffer);
+  }
+  return assetBuffers;
+}
+
+/**
+ * Regenera el fallback.jpg de una adaptación tras un cambio por chat —
+ * "hermana" de lib/master.ts:regenerateMasterFallback. Best-effort: un fallo
+ * aquí no debe deshacer el cambio de HTML ya guardado.
  */
 async function regenerateAdaptationFallback(
   projectId: string,
@@ -38,19 +66,7 @@ async function regenerateAdaptationFallback(
   supabase: SupabaseClient,
 ): Promise<void> {
   try {
-    const { data: assetRows } = await supabase.from("adstudio_assets").select("*").eq("project_id", projectId);
-    const allAssets = (assetRows ?? []) as ProjectAsset[];
-
-    const assetBuffers = new Map<string, Buffer>();
-    for (const asset of allAssets) {
-      if (asset.discarded) continue;
-      const filename = (asset.metadata as TextLayerMetadata | undefined)?.filename;
-      if (!filename) continue;
-      const exported = exportFilenameFor(filename, !!asset.export_as_jpg);
-      const buffer = await downloadAsset(supabase, `${projectId}/adaptations/${formatId}/${exported}`);
-      if (buffer) assetBuffers.set(exported, buffer);
-    }
-
+    const assetBuffers = await downloadFormatAssetBuffers(projectId, formatId, supabase);
     const fallbackJpg = await renderAdaptationFallbackJpg(html, { width, height }, assetBuffers);
     const fallbackPath = `${projectId}/adaptations/${iabFormat}/fallback.jpg`;
 
@@ -122,6 +138,19 @@ export async function refineAdaptationHtml(
     );
   }
 
+  // Screenshot del estado ACTUAL (antes de aplicar el cambio) — sin esto,
+  // Claude edita el HTML a ciegas y tras 2-3 rondas de cambios pierde el
+  // contexto visual real y rompe el layout (p. ej. mitad de la pieza en
+  // negro). Mismos assets que ve el usuario en el iframe de preview.
+  const assetBuffers = await downloadFormatAssetBuffers(projectId, formatId, supabase);
+  const inlinedCurrentHtml = inlineAssetsAsDataUrls(masterRow.html, assetBuffers);
+  const currentScreenshot = await renderInlinedHtmlToImage(
+    inlinedCurrentHtml,
+    masterRow.width as number,
+    masterRow.height as number,
+    { forceAnimationEnd: true },
+  );
+
   const client = createClaudeClient();
   const response = await client.messages.create({
     model: "claude-sonnet-4-6",
@@ -130,7 +159,17 @@ export async function refineAdaptationHtml(
     messages: [
       {
         role: "user",
-        content: `HTML actual:\n${masterRow.html}\n\nCambio a aplicar: ${changeDescription}`,
+        content: [
+          { type: "text", text: "Estado actual de la pieza:" },
+          {
+            type: "image",
+            source: { type: "base64", media_type: "image/png", data: currentScreenshot.toString("base64") },
+          },
+          {
+            type: "text",
+            text: `HTML actual:\n${masterRow.html}\n\nCambio a aplicar: ${changeDescription}\n\nAplica SOLO el cambio pedido. Mantén todo lo demás exactamente igual. Devuelve el HTML completo.`,
+          },
+        ] satisfies Array<Anthropic.Messages.TextBlockParam | Anthropic.Messages.ImageBlockParam>,
       },
     ],
   });
@@ -164,6 +203,11 @@ export async function refineAdaptationHtml(
     html,
     supabase,
   );
+
+  // El ZIP de entrega ya subido a Storage (trigger/render-adaptations.ts) se
+  // reconstruye para reflejar este cambio — si no, la descarga se quedaría
+  // con el html/fallback de antes del refinamiento.
+  await rebuildDeliveryZip(projectId, supabase);
 
   await supabase.from("adstudio_changes").insert({
     project_id: projectId,
