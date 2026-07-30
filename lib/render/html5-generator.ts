@@ -29,6 +29,7 @@ REGLAS DE PRODUCCIÓN:
 - Los PNG con canal alpha (logos, textos, elementos decorativos) NUNCA llevan background-color ni background en su CSS. Solo las capas clasificadas como 'fondo' o 'background' pueden tener color de fondo.
 - Las capas de background que son más anchas que el canvas (como imágenes panorámicas de 1250px en un canvas de 300px) deben tener overflow:visible en el #ad y la animación de desplazamiento debe modificar la propiedad left/transform. El #ad debe tener overflow:hidden para contener todo.
 - IMPORTANTE: todos los src de assets deben usar rutas relativas simples (src="background.jpg", src="logo.png"). NO uses rutas absolutas, NO uses file://, NO uses ./ Solo el nombre del archivo sin ningún prefijo de ruta.
+- Expón una función global window.goToEnd() que detenga la animación y muestre todos los elementos en su estado final visible (el frame donde todo el contenido es legible: claim, subclaim, CTA y logo todos visibles). Si el timeline usa un loop, expón también window.stopLoop() para detenerlo. Esto se usa para generar el fallback estático — no se ejecuta durante la reproducción normal.
 
 Ejemplo de background panorámico que se desplaza:
 #ad { overflow: hidden; }
@@ -237,6 +238,7 @@ export async function adaptHtml5WithVision(
       `${targetFormat.width}x${targetFormat.height}px.`,
     "NUNCA uses reglas CSS globales como '#ad img{width:100%}'.",
     "IMPORTANTE: todos los src de assets deben usar rutas relativas simples (src=\"background.jpg\", src=\"logo.png\"). NO uses rutas absolutas, NO uses file://, NO uses ./ Solo el nombre del archivo sin ningún prefijo de ruta.",
+    "Expón una función global window.goToEnd() que detenga la animación y muestre todos los elementos en su estado final visible (claim, subclaim, CTA y logo todos visibles). Si hay loop, expón también window.stopLoop(). Se usa para generar el fallback estático.",
     "Devuelve SOLO el HTML completo comenzando con <!doctype html>",
   ].join("\n");
 

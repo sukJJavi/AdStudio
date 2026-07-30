@@ -1,11 +1,14 @@
 import { randomUUID } from "crypto";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { tasks, runs } from "@trigger.dev/sdk/v3";
 import { createSessionSupabaseClient } from "@/lib/supabase/server-session";
 import { getIABFormatById, type IABFormat } from "@/lib/iab/specs";
 import { unblockedFormats } from "@/lib/iab/incident-analyzer";
 import { createClaudeClient } from "@/lib/claude/client";
 import { getApprovalStatus, type ApprovalStatus } from "@/lib/approval-status";
-import type { ChangeType, MasterRecord, Project, ProjectFormat, Tier } from "@/lib/types";
+import { downloadAssetBuffers } from "@/lib/render/assets";
+import { renderAdaptationFallbackJpg } from "@/lib/render/adaptation-fallback";
+import type { ChangeType, MasterRecord, Project, ProjectAsset, ProjectFormat, Tier } from "@/lib/types";
 
 const SIGNED_URL_TTL_SECONDS = 600;
 
@@ -223,13 +226,73 @@ const REFINE_CHANGE_TYPE: ChangeType = "C";
 export const REFINE_SYSTEM_PROMPT = `Eres un experto en producción de publicidad digital HTML5.
 Recibes el código HTML5 de un banner publicitario y una descripción de un cambio a aplicar.
 Devuelve SOLO el HTML completo modificado, sin explicaciones, sin markdown, comenzando con <!doctype html>.
-Modifica ÚNICAMENTE lo que se pide. No cambies nada más.`;
+Modifica ÚNICAMENTE lo que se pide. No cambies nada más.
+Si el HTML expone window.goToEnd()/window.stopLoop(), consérvalas intactas salvo que el cambio pedido las afecte directamente — se usan para generar el fallback estático.`;
 
 /** Quita el fence ```html ... ``` si Claude lo añade a pesar de la instrucción de no hacerlo. */
 function stripCodeFence(text: string): string {
   const trimmed = text.trim();
   const fenced = trimmed.match(/^```(?:html)?\s*([\s\S]*?)\s*```$/i);
   return (fenced ? fenced[1] : trimmed).trim();
+}
+
+/**
+ * Regenera el fallback.jpg del master primario tras un cambio de HTML5 vía
+ * chat (refineMasterHtml) — sin esto, el JPG de respaldo servido en el ZIP
+ * quedaría desincronizado del HTML5 recién modificado. Screenshot real del
+ * HTML final (mismo mecanismo que trigger/render-adaptations.ts para las
+ * adaptaciones), no una recomposición manual con Sharp. Best-effort: un fallo
+ * aquí no debe deshacer el cambio de HTML ya guardado.
+ */
+async function regenerateMasterFallback(
+  projectId: string,
+  html: string,
+  supabase: SupabaseClient,
+): Promise<void> {
+  try {
+    const { data: masterRow } = await supabase
+      .from("adstudio_masters")
+      .select("format_id, width, height, jpg_path")
+      .eq("project_id", projectId)
+      .eq("is_primary", true)
+      .maybeSingle();
+
+    if (!masterRow?.jpg_path) return;
+
+    let sourcePsdId: string | null = null;
+    if (masterRow.format_id) {
+      const { data: formatRow } = await supabase
+        .from("adstudio_formats")
+        .select("source_psd_id")
+        .eq("id", masterRow.format_id)
+        .maybeSingle();
+      sourcePsdId = (formatRow?.source_psd_id as string | null) ?? null;
+    }
+
+    const { data: assetRows } = await supabase.from("adstudio_assets").select("*").eq("project_id", projectId);
+    const allAssets = (assetRows ?? []) as ProjectAsset[];
+    const scopedAssets = sourcePsdId ? allAssets.filter((a) => a.source_psd_id === sourcePsdId) : allAssets;
+
+    const assetBuffers = await downloadAssetBuffers(scopedAssets, supabase);
+    const fallbackJpg = await renderAdaptationFallbackJpg(
+      html,
+      { width: masterRow.width, height: masterRow.height },
+      assetBuffers,
+    );
+
+    await Promise.all([
+      supabase.storage
+        .from("adstudio-projects")
+        .upload(masterRow.jpg_path, fallbackJpg, { contentType: "image/jpeg", upsert: true }),
+      supabase
+        .from("adstudio_masters")
+        .update({ jpg_size_bytes: fallbackJpg.byteLength })
+        .eq("project_id", projectId)
+        .eq("is_primary", true),
+    ]);
+  } catch (err) {
+    console.error("No se pudo regenerar fallback.jpg tras refineMasterHtml:", err);
+  }
 }
 
 export type MasterChangeEntry = {
@@ -356,6 +419,8 @@ export async function refineMasterHtml(projectId: string, changeDescription: str
   }
 
   await supabase.from("adstudio_projects").update({ master_html: html }).eq("id", projectId);
+
+  await regenerateMasterFallback(projectId, html, supabase);
 
   const { data: changeRow, error: changeError } = await supabase
     .from("adstudio_changes")

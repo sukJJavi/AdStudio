@@ -22,7 +22,11 @@ export async function renderAdaptationFallbackJpg(
   assetBuffers: Map<string, Buffer>,
 ): Promise<Buffer> {
   const inlinedHtml = inlineAssetsAsDataUrls(html, assetBuffers);
-  const screenshot = await renderInlinedHtmlToImage(inlinedHtml, format.width, format.height);
+  // Siempre el frame final de la animación (claim/subclaim/CTA/logo visibles)
+  // — nunca un frame intermedio en movimiento, ver browserless-renderer.ts.
+  const screenshot = await renderInlinedHtmlToImage(inlinedHtml, format.width, format.height, {
+    forceAnimationEnd: true,
+  });
 
   let quality = 85;
   let result: Buffer;

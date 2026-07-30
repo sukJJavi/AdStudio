@@ -2,7 +2,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClaudeClient } from "@/lib/claude/client";
 import { ensureAdBorder, sanitizeHtml, stripCodeFence } from "@/lib/render/html5-generator";
 import { REFINE_SYSTEM_PROMPT, TIER_ALLOWED_CHANGE_TYPES, TIER_ROUNDS_LIMIT, type MasterChangeEntry } from "@/lib/master";
-import type { ChangeType, Tier } from "@/lib/types";
+import { downloadAsset } from "@/lib/render/assets";
+import { exportFilenameFor } from "@/lib/render/export-format";
+import { renderAdaptationFallbackJpg } from "@/lib/render/adaptation-fallback";
+import type { ChangeType, ProjectAsset, TextLayerMetadata, Tier } from "@/lib/types";
 
 /** El chat de cambios sobre una adaptación siempre es un cambio tipo C (revisión), igual que sobre el master principal. */
 const REFINE_CHANGE_TYPE: ChangeType = "C";
@@ -13,6 +16,52 @@ export class AdaptationRefineError extends Error {
   constructor(status: 400 | 403 | 404 | 502, message: string) {
     super(message);
     this.status = status;
+  }
+}
+
+/**
+ * Regenera el fallback.jpg de un borrador Nivel 2 tras un cambio por chat —
+ * "hermana" de lib/master.ts:regenerateMasterFallback. Los assets se
+ * descargan de `{projectId}/adaptations/{formatId}/{filename}` (no del PSD
+ * original): esa carpeta ya tiene, por formato, el fondo/imagen_principal
+ * reencuadrado con FLUX que persiste trigger/render-adaptations.ts — usar el
+ * PSD original perdería ese reencuadre. Best-effort: un fallo aquí no debe
+ * deshacer el cambio de HTML ya guardado.
+ */
+async function regenerateAdaptationFallback(
+  projectId: string,
+  formatId: string,
+  iabFormat: string,
+  width: number,
+  height: number,
+  html: string,
+  supabase: SupabaseClient,
+): Promise<void> {
+  try {
+    const { data: assetRows } = await supabase.from("adstudio_assets").select("*").eq("project_id", projectId);
+    const allAssets = (assetRows ?? []) as ProjectAsset[];
+
+    const assetBuffers = new Map<string, Buffer>();
+    for (const asset of allAssets) {
+      if (asset.discarded) continue;
+      const filename = (asset.metadata as TextLayerMetadata | undefined)?.filename;
+      if (!filename) continue;
+      const exported = exportFilenameFor(filename, !!asset.export_as_jpg);
+      const buffer = await downloadAsset(supabase, `${projectId}/adaptations/${formatId}/${exported}`);
+      if (buffer) assetBuffers.set(exported, buffer);
+    }
+
+    const fallbackJpg = await renderAdaptationFallbackJpg(html, { width, height }, assetBuffers);
+    const fallbackPath = `${projectId}/adaptations/${iabFormat}/fallback.jpg`;
+
+    await Promise.all([
+      supabase.storage
+        .from("adstudio-projects")
+        .upload(fallbackPath, fallbackJpg, { contentType: "image/jpeg", upsert: true }),
+      supabase.from("adstudio_masters").update({ jpg_size_bytes: fallbackJpg.byteLength }).eq("project_id", projectId).eq("format_id", formatId),
+    ]);
+  } catch (err) {
+    console.error("No se pudo regenerar fallback.jpg tras refineAdaptationHtml:", err);
   }
 }
 
@@ -34,7 +83,7 @@ export async function refineAdaptationHtml(
 ): Promise<{ html: string }> {
   const { data: masterRow, error: masterError } = await supabase
     .from("adstudio_masters")
-    .select("id, html, iab_format")
+    .select("id, html, iab_format, width, height")
     .eq("project_id", projectId)
     .eq("format_id", formatId)
     .maybeSingle();
@@ -105,6 +154,16 @@ export async function refineAdaptationHtml(
       contentType: "text/html",
       upsert: true,
     });
+
+  await regenerateAdaptationFallback(
+    projectId,
+    formatId,
+    masterRow.iab_format as string,
+    masterRow.width as number,
+    masterRow.height as number,
+    html,
+    supabase,
+  );
 
   await supabase.from("adstudio_changes").insert({
     project_id: projectId,

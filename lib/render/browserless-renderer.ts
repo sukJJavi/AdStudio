@@ -73,7 +73,12 @@ export async function renderHtmlToImage(projectId: string, width: number, height
  * el caller), así que no depende de un origen público que resuelva rutas
  * relativas.
  */
-export async function renderInlinedHtmlToImage(html: string, width: number, height: number): Promise<Buffer> {
+export async function renderInlinedHtmlToImage(
+  html: string,
+  width: number,
+  height: number,
+  options?: { forceAnimationEnd?: boolean },
+): Promise<Buffer> {
   const browser = await puppeteer.connect({ browserWSEndpoint: browserlessEndpoint() });
 
   try {
@@ -81,8 +86,23 @@ export async function renderInlinedHtmlToImage(html: string, width: number, heig
     await page.setViewport({ width, height, deviceScaleFactor: 1 });
     await page.setContent(html, { waitUntil: "load" });
 
-    // Deja correr el frame inicial de la animación antes de capturar.
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    if (options?.forceAnimationEnd) {
+      // El fallback.jpg debe capturar el frame FINAL de la animación (claim,
+      // subclaim, CTA y logo todos visibles), no un frame intermedio en
+      // movimiento — salta al final de cualquier animación CSS y llama a los
+      // hooks JS que el HTML5 generado expone para esto (window.goToEnd /
+      // window.stopLoop, ver SYSTEM_PROMPT en lib/render/html5-generator.ts).
+      await page.evaluate(() => {
+        document.getAnimations().forEach((anim) => anim.finish());
+        const w = window as unknown as { goToEnd?: () => void; stopLoop?: () => void };
+        if (typeof w.goToEnd === "function") w.goToEnd();
+        if (typeof w.stopLoop === "function") w.stopLoop();
+      });
+      await new Promise((resolve) => setTimeout(resolve, 300));
+    } else {
+      // Deja correr el frame inicial de la animación antes de capturar.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
 
     const screenshot = await page.screenshot({
       type: "png",

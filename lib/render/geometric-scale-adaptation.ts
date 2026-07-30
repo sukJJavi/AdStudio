@@ -28,6 +28,17 @@ function scaleCssRules(css: string, scaleX: number, scaleY: number): string {
     });
 }
 
+/** Extrae los bloques `selector { body }` de un `<style>` — solo para logging de depuración, no altera el escalado. */
+function extractRuleBlocks(css: string): { selector: string; body: string }[] {
+  const blocks: { selector: string; body: string }[] = [];
+  const regex = /([#.][\w-]+)\s*\{([^}]*)\}/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(css))) {
+    blocks.push({ selector: match[1], body: match[2].trim() });
+  }
+  return blocks;
+}
+
 /** `object-fit` según classification: fondo/imagen_principal rellenan recortando (cover), el resto nunca se deforma (contain). */
 function objectFitFor(classification: string | null): "cover" | "contain" {
   return classification && BACKGROUND_CLASSIFICATIONS.has(classification) ? "cover" : "contain";
@@ -101,9 +112,17 @@ export async function generateNivel1Adaptation(
   const scaleY = targetFormat.height / masterFormat.height;
 
   // 1. Reescalar las reglas de posición/tamaño del <style> del master.
-  let html = masterHtml.replace(/<style>([\s\S]*?)<\/style>/i, (_match, css: string) => {
-    return `<style>${scaleCssRules(css, scaleX, scaleY)}</style>`;
-  });
+  const cssBefore = masterHtml.match(/<style>([\s\S]*?)<\/style>/i)?.[1] ?? "";
+  const cssAfter = scaleCssRules(cssBefore, scaleX, scaleY);
+
+  const beforeBlocks = extractRuleBlocks(cssBefore);
+  const afterBlocks = extractRuleBlocks(cssAfter);
+  console.log(
+    "Nivel1 CSS rules found:",
+    beforeBlocks.map((b, i) => ({ selector: b.selector, before: b.body, after: afterBlocks[i]?.body })),
+  );
+
+  let html = masterHtml.replace(/<style>([\s\S]*?)<\/style>/i, () => `<style>${cssAfter}</style>`);
 
   // 2. Forzar el tamaño exacto del #ad al formato destino — el paso anterior
   // ya lo reescala proporcionalmente, pero el redondeo por regla puede
@@ -142,6 +161,11 @@ export async function generateNivel1Adaptation(
       console.error(`Nivel1: no se pudo reescalar "${filename}":`, err);
     }
   }
+
+  console.log(
+    "Nivel1 img srcs:",
+    [...html.matchAll(/<img[^>]+src="([^"]+)"/g)].map((m) => m[1]),
+  );
 
   return { html, assetBuffers: scaledBuffers };
 }
