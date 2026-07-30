@@ -9,7 +9,7 @@ import { renderInlinedHtmlToImage } from "@/lib/render/browserless-renderer";
 import { adaptImageAsset } from "@/lib/render/replicate-outpainting";
 import { renderAdaptationFallbackJpg } from "@/lib/render/adaptation-fallback";
 import { exportBufferFor, exportFilenameFor } from "@/lib/render/export-format";
-import { classifyFormat } from "@/lib/render/format-level";
+import { classifyFormat, ratioDistance } from "@/lib/render/format-level";
 import { generateNivel1Adaptation } from "@/lib/render/geometric-scale-adaptation";
 import {
   buildManifestJson,
@@ -53,22 +53,27 @@ type PsdMaster = {
 /**
  * Bloque 15 — multi-master: cada PSD subido es un master independiente (ver
  * trigger/render-master.ts), no un único master global. Asigna cada formato
- * del plan al master-base cuyo ratio de aspecto sea más cercano; `exact`
- * (diferencia < 5%) significa que el formato puede servirse copiando el
- * master de ese PSD directamente (solo ajuste geométrico mínimo), sin pasar
- * por el pipeline de adaptación Nivel 1/2.
+ * del plan al master-base cuyo ratio de aspecto sea perceptualmente más
+ * cercano — distancia logarítmica (ratioDistance en lib/render/format-level.ts),
+ * no diferencia relativa lineal: esta última sobreponderaba los masters
+ * ultra-anchos (bug: un 300x250 se asignaba a un 728x90 en vez de al 300x600,
+ * porque |ratioA-ratioB|/ratioA da una distancia menor cuanto mayor es
+ * ratioA, sin relación con el parecido real de forma). `exact` (distancia
+ * logarítmica < 0.05, equivalente a ~5% de diferencia de ratio) significa que
+ * el formato puede servirse copiando el master de ese PSD directamente (solo
+ * ajuste geométrico mínimo), sin pasar por el pipeline de adaptación Nivel 1/2.
  */
 function assignMasterToFormat(formatRatio: number, psdMasters: PsdMaster[]): { psdId: string; exact: boolean } {
   let closest = psdMasters[0];
-  let minDiff = Infinity;
+  let minDist = Infinity;
   for (const m of psdMasters) {
-    const diff = Math.abs(m.ratio - formatRatio) / m.ratio;
-    if (diff < minDiff) {
-      minDiff = diff;
+    const dist = ratioDistance(m.ratio, formatRatio);
+    if (dist < minDist) {
+      minDist = dist;
       closest = m;
     }
   }
-  return { psdId: closest.psdId, exact: minDiff < 0.05 };
+  return { psdId: closest.psdId, exact: minDist < 0.05 };
 }
 
 /**
