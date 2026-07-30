@@ -221,23 +221,36 @@ async function renderOneMaster(params: {
     await supabase.from("adstudio_masters").update({ is_primary: false }).eq("project_id", projectId);
   }
 
-  await supabase.from("adstudio_masters").upsert(
-    {
-      project_id: projectId,
-      iab_format: iabFormat,
-      format_id: driverFormatId,
-      source_psd_id: sourcePsdId,
-      jpg_path: `${basePath}.jpg`,
-      png_path: `${basePath}.png`,
-      width: spec.ancho,
-      height: spec.alto,
-      jpg_size_bytes: jpgBuffer.byteLength,
-      is_primary: isPrimary,
-      html,
-      status: "ready",
-    },
-    { onConflict: "project_id,source_psd_id" },
+  console.log(`>>> Haciendo upsert de adstudio_masters para PSD ${sourcePsdId} (iab_format=${iabFormat})...`);
+
+  const { data: upsertData, error: upsertErr } = await supabase
+    .from("adstudio_masters")
+    .upsert(
+      {
+        project_id: projectId,
+        iab_format: iabFormat,
+        format_id: driverFormatId,
+        source_psd_id: sourcePsdId,
+        jpg_path: `${basePath}.jpg`,
+        png_path: `${basePath}.png`,
+        width: spec.ancho,
+        height: spec.alto,
+        jpg_size_bytes: jpgBuffer.byteLength,
+        is_primary: isPrimary,
+        html,
+        status: "ready",
+      },
+      { onConflict: "project_id,source_psd_id" },
+    )
+    .select();
+
+  console.log(
+    `>>> Upsert resultado para PSD ${sourcePsdId}: filas=${upsertData?.length ?? 0} error=${upsertErr?.message ?? "ninguno"}`,
   );
+
+  if (upsertErr) {
+    throw new Error(`No se pudo guardar el master de adstudio_masters (PSD ${sourcePsdId}): ${upsertErr.message}`);
+  }
 
   if (driverFormatId) {
     await supabase.from("adstudio_formats").update({ status: "ready" }).eq("id", driverFormatId);
@@ -347,46 +360,66 @@ export const renderMaster = task({
     for (let i = 0; i < psdAssets.length; i++) {
       const psdAsset = psdAssets[i];
 
-      console.log(`Generando master para PSD ${psdAsset.layer_name} (${i + 1}/${psdAssets.length})`);
+      console.log(`>>> INICIO iteración ${i + 1}/${psdAssets.length}: ${psdAsset.layer_name} (${psdAsset.id})`);
 
       metadata.set("step", `generando-master-psd-${i + 1}-de-${psdAssets.length}`);
       metadata.set("progress", i / psdAssets.length);
 
-      const dims = psdDimensions(psdAsset, projectPsdDims);
-      if (!dims) {
-        console.error(`No se pudieron determinar las dimensiones del PSD ${psdAsset.id}, se omite su master.`);
-        continue;
+      // Bloque 15 fix: un error generando el master de un PSD (Claude, Sharp,
+      // Storage, etc.) NO debe abortar el job entero — antes un throw aquí
+      // cortaba el for-loop y los PSDs siguientes se quedaban sin master.
+      try {
+        const dims = psdDimensions(psdAsset, projectPsdDims);
+        if (!dims) {
+          console.log(`>>> SKIP ${psdAsset.layer_name}: sin dimensiones (psdWidth/psdHeight/proyecto)`);
+          continue;
+        }
+
+        // El "formato conductor" (driver) de este PSD es el que el usuario
+        // asoció explícitamente en el brief (Bloque 11) — aporta copy/clickTag/
+        // nombre IAB real. Sin asociación explícita, el master se genera igual
+        // (Bloque 15: cada PSD es un master, tenga o no un formato del plan
+        // vinculado), con copy vacío y un identificador sintético (siempre no
+        // nulo — adstudio_masters.iab_format es NOT NULL).
+        const driverFormat = allFormats.find((f) => f.source_psd_id === psdAsset.id) ?? null;
+        const iabFormat = driverFormat?.iab_format ?? syntheticIabFormat(psdAsset, dims);
+        const scopedAssets = allAssets.filter((a) => a.source_psd_id === psdAsset.id && !a.discarded);
+
+        console.log(`>>> Capas encontradas para ${psdAsset.layer_name}:`, scopedAssets.length);
+
+        if (scopedAssets.length === 0) {
+          console.log(`>>> SKIP ${psdAsset.layer_name}: sin capas no descartadas`);
+          continue;
+        }
+
+        console.log(`>>> Generando HTML para ${psdAsset.layer_name} (iab_format=${iabFormat})...`);
+
+        await renderOneMaster({
+          projectId: payload.projectId,
+          sourcePsdId: psdAsset.id,
+          spec: dims,
+          iabFormat,
+          copy: driverFormat?.copy ?? null,
+          clickTagUrl: driverFormat?.url_destino ?? "",
+          driverFormatId: driverFormat?.id ?? null,
+          assets: scopedAssets,
+          fontPrimary,
+          isPrimary: psdAsset.id === primaryPsdId,
+          supabase,
+        });
+
+        console.log(`>>> Master generado y guardado para ${psdAsset.layer_name}`);
+
+        producedAny = true;
+      } catch (err) {
+        console.error(
+          `>>> ERROR en iteración ${psdAsset.layer_name} (${psdAsset.id}):`,
+          err instanceof Error ? err.message : err,
+        );
+        // No relanzar: se continúa con el resto de PSDs.
       }
 
-      // El "formato conductor" (driver) de este PSD es el que el usuario
-      // asoció explícitamente en el brief (Bloque 11) — aporta copy/clickTag/
-      // nombre IAB real. Sin asociación explícita, el master se genera igual
-      // (Bloque 15: cada PSD es un master, tenga o no un formato del plan
-      // vinculado), con copy vacío y un identificador sintético.
-      const driverFormat = allFormats.find((f) => f.source_psd_id === psdAsset.id) ?? null;
-      const iabFormat = driverFormat?.iab_format ?? syntheticIabFormat(psdAsset, dims);
-      const scopedAssets = allAssets.filter((a) => a.source_psd_id === psdAsset.id && !a.discarded);
-
-      if (scopedAssets.length === 0) {
-        console.warn(`El PSD ${psdAsset.layer_name} (${psdAsset.id}) no tiene capas no descartadas, se omite su master.`);
-        continue;
-      }
-
-      await renderOneMaster({
-        projectId: payload.projectId,
-        sourcePsdId: psdAsset.id,
-        spec: dims,
-        iabFormat,
-        copy: driverFormat?.copy ?? null,
-        clickTagUrl: driverFormat?.url_destino ?? "",
-        driverFormatId: driverFormat?.id ?? null,
-        assets: scopedAssets,
-        fontPrimary,
-        isPrimary: psdAsset.id === primaryPsdId,
-        supabase,
-      });
-
-      producedAny = true;
+      console.log(`>>> FIN iteración ${i + 1}/${psdAssets.length}`);
     }
 
     if (!producedAny) {
