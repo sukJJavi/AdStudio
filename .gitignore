@@ -48,3 +48,4 @@ next-env.d.ts
 *.xlsx
 *.xls
 /designsystem
+SECURITY_AUDIT_2026-08-06.md
