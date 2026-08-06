@@ -18,11 +18,23 @@ function scaledDimensions(width: number, height: number): { width: number; heigh
 }
 
 /** Tarjeta de un master en la aprobación pública — todos se muestran igual (Bloque 15: uno por PSD subido). */
-function MasterCard({ projectId, master }: { projectId: string; master: ApprovalMasterEntry }) {
+function MasterCard({
+  projectId,
+  master,
+  token,
+}: {
+  projectId: string;
+  master: ApprovalMasterEntry;
+  token: string;
+}) {
   const { width: boxWidth, height: boxHeight, scale } = scaledDimensions(master.width, master.height);
-  const previewUrl = master.isPrimary
+  const previewPath = master.isPrimary
     ? `/api/preview/${projectId}`
     : `/api/preview/${projectId}/master/${master.sourcePsdId}`;
+  // El preview es una ruta autorizada por sesión propietaria O token de aprobación (ver
+  // lib/preview-auth.ts) — aquí no hay sesión, así que el token viaja en la query y el
+  // propio handler lo reenvía a los assets referenciados dentro del HTML5.
+  const previewUrl = `${previewPath}?token=${encodeURIComponent(token)}`;
 
   return (
     <div className="space-y-2">
@@ -88,7 +100,7 @@ export default async function ApprovePage({
       ) : (
         <div className="grid gap-4 sm:grid-cols-2">
           {context.masters.map((master, i) => (
-            <MasterCard key={master.sourcePsdId ?? i} projectId={context.projectId} master={master} />
+            <MasterCard key={master.sourcePsdId ?? i} projectId={context.projectId} master={master} token={token} />
           ))}
         </div>
       )}

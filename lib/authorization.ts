@@ -39,3 +39,9 @@ export async function requireProjectOwnership(projectId: string): Promise<Projec
 
   return { ok: true, userId: user.id };
 }
+
+/** Variante booleana de {@link requireProjectOwnership} para rutas que solo necesitan saber si hay sesión propietaria (p. ej. como una de varias vías de autorización posibles). */
+export async function isProjectOwner(projectId: string): Promise<boolean> {
+  const result = await requireProjectOwnership(projectId);
+  return result.ok;
+}

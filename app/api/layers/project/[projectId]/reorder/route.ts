@@ -30,7 +30,8 @@ export async function POST(
 
   const failed = results.find((r) => r.error);
   if (failed) {
-    return NextResponse.json({ error: failed.error?.message ?? "No se pudo reordenar." }, { status: 400 });
+    console.error("Error interno:", failed.error);
+    return NextResponse.json({ error: "No se pudo reordenar." }, { status: 400 });
   }
 
   return NextResponse.json({ ok: true });

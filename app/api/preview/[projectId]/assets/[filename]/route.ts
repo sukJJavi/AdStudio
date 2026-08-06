@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import sharp from "sharp";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { authorizePreviewRequest, previewUnauthorizedResponse } from "@/lib/preview-auth";
+import { isUnsafeFilename } from "@/lib/preview-filename";
 
 export const runtime = "nodejs";
 
@@ -19,14 +21,23 @@ function contentTypeFor(filename: string): string {
 /**
  * Sirve los PNG/JPG de las capas del proyecto (Storage: `{projectId}/layers/{filename}`)
  * para que el HTML5 servido por app/api/preview/[projectId]/route.ts pueda cargar sus
- * `src="..."` relativos reescritos a esta ruta. Público, sin sesión — mismo criterio
- * que el resto del preview (ver ese route.ts).
+ * `src="..."` relativos reescritos a esta ruta. Requiere sesión propietaria O un
+ * `?token=` de aprobación vigente — mismo criterio que el resto del preview (ver ese
+ * route.ts).
  */
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ projectId: string; filename: string }> },
 ) {
   const { projectId, filename } = await params;
+
+  if (isUnsafeFilename(filename)) {
+    return new NextResponse("Nombre de archivo inválido.", { status: 400 });
+  }
+
+  if (!(await authorizePreviewRequest(req, projectId))) {
+    return previewUnauthorizedResponse();
+  }
 
   const supabase = createServerSupabaseClient();
   const isJpg = filename.endsWith(".jpg");

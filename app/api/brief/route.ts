@@ -70,10 +70,12 @@ export async function GET(req: NextRequest) {
     ]);
 
   if (projectError) {
-    return NextResponse.json({ error: projectError.message }, { status: 404 });
+    console.error("Error interno:", projectError);
+    return NextResponse.json({ error: "Proyecto no encontrado." }, { status: 404 });
   }
   if (formatsError) {
-    return NextResponse.json({ error: formatsError.message }, { status: 500 });
+    console.error("Error interno:", formatsError);
+    return NextResponse.json({ error: "Error interno del servidor" }, { status: 500 });
   }
 
   return NextResponse.json({ project, formats: formats ?? [] });
@@ -111,10 +113,8 @@ export async function POST(req: NextRequest) {
     .single();
 
   if (projectError || !project) {
-    return NextResponse.json(
-      { error: projectError?.message ?? "No se pudo crear el proyecto" },
-      { status: 500 },
-    );
+    console.error("Error interno:", projectError);
+    return NextResponse.json({ error: "No se pudo crear el proyecto" }, { status: 500 });
   }
 
   if (payload.formats.length > 0) {
@@ -135,7 +135,8 @@ export async function POST(req: NextRequest) {
     );
 
     if (formatsError) {
-      return NextResponse.json({ error: formatsError.message }, { status: 500 });
+      console.error("Error interno:", formatsError);
+      return NextResponse.json({ error: "Error interno del servidor" }, { status: 500 });
     }
   }
 
@@ -176,10 +177,8 @@ export async function PUT(req: NextRequest) {
     .single();
 
   if (projectError || !project) {
-    return NextResponse.json(
-      { error: projectError?.message ?? "No se pudo actualizar el proyecto" },
-      { status: 500 },
-    );
+    console.error("Error interno:", projectError);
+    return NextResponse.json({ error: "No se pudo actualizar el proyecto" }, { status: 500 });
   }
 
   await supabase.from("adstudio_formats").delete().eq("project_id", payload.project.id);
@@ -202,7 +201,8 @@ export async function PUT(req: NextRequest) {
     );
 
     if (formatsError) {
-      return NextResponse.json({ error: formatsError.message }, { status: 500 });
+      console.error("Error interno:", formatsError);
+      return NextResponse.json({ error: "Error interno del servidor" }, { status: 500 });
     }
   }
 
@@ -226,7 +226,8 @@ export async function DELETE(req: NextRequest) {
   const { error } = await supabase.from("adstudio_projects").delete().eq("id", projectId);
 
   if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+    console.error("Error interno:", error);
+    return NextResponse.json({ error: "Error interno del servidor" }, { status: 500 });
   }
 
   return NextResponse.json({ ok: true });

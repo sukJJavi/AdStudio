@@ -37,7 +37,8 @@ export async function DELETE(
   const { error: deleteError } = await supabase.from("adstudio_assets").delete().eq("id", assetId);
 
   if (deleteError) {
-    return NextResponse.json({ error: deleteError.message }, { status: 500 });
+    console.error("Error interno:", deleteError);
+    return NextResponse.json({ error: "Error interno del servidor" }, { status: 500 });
   }
 
   if (asset.layer_type === "psd") {

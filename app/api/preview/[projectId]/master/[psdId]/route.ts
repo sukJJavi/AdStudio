@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { authorizePreviewRequest, previewUnauthorizedResponse, tokenQuerySuffix } from "@/lib/preview-auth";
 
 export const runtime = "nodejs";
 
@@ -14,10 +15,14 @@ export const runtime = "nodejs";
  * mismo criterio que el resto de rutas de preview.
  */
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ projectId: string; psdId: string }> },
 ) {
   const { projectId, psdId } = await params;
+
+  if (!(await authorizePreviewRequest(req, projectId))) {
+    return previewUnauthorizedResponse();
+  }
 
   const supabase = createServerSupabaseClient();
 
@@ -35,9 +40,10 @@ export async function GET(
   // Reutiliza la ruta genérica de assets del proyecto (ya sirve por filename,
   // sin distinguir de qué PSD proviene — los nombres son únicos a nivel
   // proyecto, ver trigger/analyze-psd.ts:uniqueFilename).
+  const assetQuery = tokenQuerySuffix(req);
   const html = master.html.replace(
     /src="([^"]+\.(png|jpg|jpeg|gif))"/gi,
-    `src="/api/preview/${projectId}/assets/$1"`,
+    `src="/api/preview/${projectId}/assets/$1${assetQuery}"`,
   );
 
   return new NextResponse(html, {

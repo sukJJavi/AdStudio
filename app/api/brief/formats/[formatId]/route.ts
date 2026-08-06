@@ -74,7 +74,8 @@ export async function PATCH(
     .single();
 
   if (error || !updated) {
-    return NextResponse.json({ error: error?.message ?? "No se pudo actualizar el formato." }, { status: 400 });
+    console.error("Error interno:", error);
+    return NextResponse.json({ error: "No se pudo actualizar el formato." }, { status: 400 });
   }
 
   return NextResponse.json({ format: updated });

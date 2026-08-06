@@ -99,6 +99,27 @@ export type ApprovalContext =
       masters: ApprovalMasterEntry[];
     };
 
+/**
+ * Verifica que `token` es un token de aprobación vigente para `projectId` — usado por las
+ * rutas públicas de preview (app/api/preview/**) para autorizar el acceso del cliente final
+ * sin sesión, vía el mismo link de /approve/[token] que ya recibió.
+ */
+export async function isValidApprovalToken(projectId: string, token: string): Promise<boolean> {
+  const supabase = createServerSupabaseClient();
+
+  const { data: tokenRow } = await supabase
+    .from("adstudio_approval_tokens")
+    .select("expires_at")
+    .eq("token", token)
+    .eq("project_id", projectId)
+    .maybeSingle();
+
+  if (!tokenRow) return false;
+  if (tokenRow.expires_at && new Date(tokenRow.expires_at).getTime() < Date.now()) return false;
+
+  return true;
+}
+
 /** Lectura pública (sin sesión) del estado de un token de aprobación. Usa service-role. */
 export async function getApprovalContext(token: string): Promise<ApprovalContext> {
   const supabase = createServerSupabaseClient();

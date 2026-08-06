@@ -130,8 +130,9 @@ export async function PATCH(
               .copy(oldPath, newPath);
 
             if (copyError) {
+              console.error("Error interno:", copyError);
               return NextResponse.json(
-                { error: `No se pudo renombrar el archivo en Storage: ${copyError.message}` },
+                { error: "No se pudo renombrar el archivo en Storage." },
                 { status: 500 },
               );
             }
@@ -155,7 +156,8 @@ export async function PATCH(
     .single();
 
   if (error || !updated) {
-    return NextResponse.json({ error: error?.message ?? "No se pudo actualizar la capa." }, { status: 400 });
+    console.error("Error interno:", error);
+    return NextResponse.json({ error: "No se pudo actualizar la capa." }, { status: 400 });
   }
 
   return NextResponse.json({ layer: updated });

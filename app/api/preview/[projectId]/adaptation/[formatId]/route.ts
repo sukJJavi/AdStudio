@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
+import { authorizePreviewRequest, previewUnauthorizedResponse, tokenQuerySuffix } from "@/lib/preview-auth";
 
 export const runtime = "nodejs";
 
@@ -16,10 +17,14 @@ export const runtime = "nodejs";
  * igual que el resto, copiando el master de su PSD asignado).
  */
 export async function GET(
-  _req: NextRequest,
+  req: NextRequest,
   { params }: { params: Promise<{ projectId: string; formatId: string }> },
 ) {
   const { projectId, formatId } = await params;
+
+  if (!(await authorizePreviewRequest(req, projectId))) {
+    return previewUnauthorizedResponse();
+  }
 
   const supabase = createServerSupabaseClient();
 
@@ -46,9 +51,10 @@ export async function GET(
 
   // Mismo reescrito que app/api/preview/[projectId]/route.ts, pero apuntando
   // a los assets propios de esta adaptación (ver assets/[filename]/route.ts).
+  const assetQuery = tokenQuerySuffix(req);
   const html = rawHtml.replace(
     /src="([^"]+\.(png|jpg|jpeg|gif))"/gi,
-    `src="/api/preview/${projectId}/adaptation/${formatId}/assets/$1"`,
+    `src="/api/preview/${projectId}/adaptation/${formatId}/assets/$1${assetQuery}"`,
   );
 
   return new NextResponse(html, {
