@@ -110,17 +110,20 @@ export async function PATCH(
         const newFilename = suffix ? `${newBase}_${suffix}.png` : `${newBase}.png`;
 
         if (newFilename !== currentFilename) {
-          const oldPath = `${currentAsset.project_id}/layers/${currentFilename}`;
-          const newPath = `${currentAsset.project_id}/layers/${newFilename}`;
+          // Namespaced por source_psd_id (ver trigger/analyze-psd.ts): dos PSDs
+          // distintos pueden generar el mismo filename sin ser el mismo archivo.
+          const layersFolder = `${currentAsset.project_id}/layers/${currentAsset.source_psd_id}`;
+          const oldPath = `${layersFolder}/${currentFilename}`;
+          const newPath = `${layersFolder}/${newFilename}`;
 
-          // Dos assets pueden llegar al mismo newFilename (p. ej. dos capas
-          // "imagen_principal" se reclasifican a "logo" por separado) — copy()
-          // sobre un path ya ocupado falla con "The resource already exists".
-          // Se comprueba antes y, si ya existe, se deja el archivo/nombre tal
-          // cual y solo se actualiza classification en la BD.
+          // Dos assets del mismo PSD pueden llegar al mismo newFilename (p. ej.
+          // dos capas "imagen_principal" se reclasifican a "logo" por separado)
+          // — copy() sobre un path ya ocupado falla con "The resource already
+          // exists". Se comprueba antes y, si ya existe, se deja el archivo/nombre
+          // tal cual y solo se actualiza classification en la BD.
           const { data: existing } = await supabase.storage
             .from("adstudio-projects")
-            .list(`${currentAsset.project_id}/layers`, { search: newFilename });
+            .list(layersFolder, { search: newFilename });
 
           if (existing && existing.length > 0) {
             console.log("Target filename already exists, skipping rename:", newFilename);

@@ -41,7 +41,21 @@ export async function GET(
 
   const supabase = createServerSupabaseClient();
   const isJpg = filename.endsWith(".jpg");
-  const storagePath = `${projectId}/layers/${filename}`;
+
+  // El storagePath real está namespaced por source_psd_id (ver
+  // trigger/analyze-psd.ts), así que se resuelve por metadata.filename en vez
+  // de reconstruir la ruta a mano. Si no hay asset registrado (archivo subido
+  // antes de este cambio), cae a la ruta plana histórica.
+  const { data: originalAsset } = await supabase
+    .from("adstudio_assets")
+    .select("file_path")
+    .eq("project_id", projectId)
+    .eq("metadata->>filename", filename)
+    .not("file_path", "is", null)
+    .limit(1)
+    .maybeSingle();
+
+  const storagePath = originalAsset?.file_path ?? `${projectId}/layers/${filename}`;
 
   const { data } = await supabase.storage.from("adstudio-projects").download(storagePath);
 

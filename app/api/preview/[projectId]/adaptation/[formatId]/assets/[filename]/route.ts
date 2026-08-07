@@ -81,7 +81,19 @@ export async function GET(
   // Piezas producidas antes de que esta ruta persistiera assets por formato
   // (o capas que no cambian entre formatos): caen al asset original del
   // master — no será la versión reencuadrada con FLUX, pero evita un 404.
-  const fallbackPath = `${projectId}/layers/${filename}`;
+  // El storagePath real está namespaced por source_psd_id (ver
+  // trigger/analyze-psd.ts), así que se resuelve por metadata.filename en vez
+  // de reconstruir la ruta a mano.
+  const { data: originalAsset } = await supabase
+    .from("adstudio_assets")
+    .select("file_path")
+    .eq("project_id", projectId)
+    .eq("metadata->>filename", filename)
+    .not("file_path", "is", null)
+    .limit(1)
+    .maybeSingle();
+
+  const fallbackPath = originalAsset?.file_path ?? `${projectId}/layers/${filename}`;
   const { data: fallbackData } = await supabase.storage.from("adstudio-projects").download(fallbackPath);
 
   if (fallbackData) {

@@ -73,12 +73,13 @@ export async function renderFallbackFromFrame(
       rawBuffer = assetOverrides.get(layer.id)!;
       console.log("Fallback: usando override para:", layer.layer_name);
     } else {
-      const filename = filenameOf(layer);
-      if (!filename) {
-        console.log("Fallback: sin filename, skip:", layer.layer_name);
+      // Usa el file_path real del asset (namespaced por source_psd_id, ver
+      // trigger/analyze-psd.ts) en vez de reconstruirlo desde el filename.
+      const storagePath = layer.file_path;
+      if (!storagePath) {
+        console.log("Fallback: sin file_path, skip:", layer.layer_name);
         continue;
       }
-      const storagePath = `${projectId}/layers/${filename.replace(/\.jpg$/i, ".png")}`;
       console.log("Fallback: descargando:", storagePath);
 
       const { data, error } = await supabase.storage.from("adstudio-projects").download(storagePath);

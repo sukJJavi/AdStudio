@@ -170,17 +170,31 @@ export const analyzePsd = task({
 
     let layersExtracted = 0;
     let layersClassified = 0;
-    // Único por proyecto (no por PSD): dos PSDs subidos al mismo proyecto comparten
-    // carpeta de Storage `{project_id}/layers/`, así que sus nombres no pueden chocar.
-    const usedFilenames = new Map<string, number>();
 
-    type InsertedRow = { id: string; layer: Layer; frame: number | null; persistent: boolean; dpi: number | null };
-    // Combinado entre todos los PSDs del proyecto (dos PSDs comparten carpeta de
-    // Storage `{project_id}/layers/`, ver uniqueFilename más abajo).
+    type InsertedRow = {
+      id: string;
+      layer: Layer;
+      frame: number | null;
+      persistent: boolean;
+      dpi: number | null;
+      psdAssetId: string;
+    };
+    // Combinado entre todos los PSDs del proyecto, pero cada capa recuerda su
+    // psdAssetId (source_psd_id) — el nombrado/deduplicación de más abajo se
+    // hace por PSD, nunca entre PSDs distintos (ver storagePath y duplicateAsset).
     const allInsertedRows: InsertedRow[] = [];
+    // Mapa de nombres usados por PSD (no global): dos PSDs con capas del mismo
+    // nombre/clasificación no deben desambiguarse entre sí (uniqueFilename), ni
+    // sus storagePaths deben poder colisionar (ver storagePath más abajo).
+    const usedFilenamesByPsd = new Map<string, Map<string, number>>();
 
     for (const psdAsset of psdAssets ?? []) {
       if (!psdAsset.file_path) continue;
+
+      // Por PSD: dos PSDs distintos pueden tener capas con el mismo nombre base
+      // (p. ej. dos "imagen_principal"), y no deben desambiguarse entre sí ni
+      // chocar de storagePath (ver uniqueFilename y usedFilenamesByPsd más abajo).
+      usedFilenamesByPsd.set(psdAsset.id, new Map<string, number>());
 
       const { data: file, error } = await supabase.storage
         .from("adstudio-projects")
@@ -313,7 +327,7 @@ export const analyzePsd = task({
         if (!insertError && inserted) {
           layersExtracted += 1;
           // Las capas ocultas también se clasifican y exportan (ver hidden_in_psd arriba).
-          allInsertedRows.push({ id: inserted.id as string, layer, frame, persistent, dpi });
+          allInsertedRows.push({ id: inserted.id as string, layer, frame, persistent, dpi, psdAssetId: psdAsset.id });
         }
       }
     }
@@ -324,7 +338,7 @@ export const analyzePsd = task({
     const flattenable = allInsertedRows.filter(({ layer }) => layer.imageData);
 
     for (let i = 0; i < flattenable.length; i++) {
-      const { id: assetId, layer, frame, persistent, dpi } = flattenable[i];
+      const { id: assetId, layer, frame, persistent, dpi, psdAssetId } = flattenable[i];
       const imageData = layer.imageData!;
 
       metadata.set("step", "clasificando-con-claude");
@@ -350,21 +364,28 @@ export const analyzePsd = task({
       // Fix 2: siempre PNG aquí — el JPG es una elección del usuario en el editor
       // de capas (export_as_jpg), aplicada al construir el ZIP, no en el análisis.
       const filenameBase = baseFilenameFor({ classification, frame, persistent, layerName: layer.name ?? "capa" });
+      const usedFilenames = usedFilenamesByPsd.get(psdAssetId)!;
       const filename = uniqueFilename(filenameBase, usedFilenames);
       const exportBuffer = pngBuffer;
       const contentType = "image/png";
 
-      const storagePath = `${payload.projectId}/layers/${filename}`;
+      // Namespaced por psdAssetId: dos PSDs distintos con el mismo nombre base
+      // (p. ej. dos "imagen_principal") no deben acabar compartiendo storagePath,
+      // o el upload con upsert:true de uno pisaría el PNG del otro.
+      const storagePath = `${payload.projectId}/layers/${psdAssetId}/${filename}`;
 
       // Fix 2: si el job se disparó dos veces (p. ej. una condición de carrera en
       // triggerAnalysis), la segunda ejecución recalcula el mismo storagePath para
       // la misma capa — antes de subir/clasificar, comprueba si YA existe otro
-      // asset del proyecto con ese file_path y, si es así, descarta este duplicado
-      // en vez de crear una capa visible repetida.
+      // asset del MISMO PSD con ese file_path y, si es así, descarta este duplicado
+      // en vez de crear una capa visible repetida. Debe filtrar por source_psd_id:
+      // dos PSDs distintos pueden generar el mismo filename (p. ej. "logo.png")
+      // sin ser capas duplicadas entre sí.
       const { data: duplicateAsset } = await supabase
         .from("adstudio_assets")
         .select("id")
         .eq("project_id", payload.projectId)
+        .eq("source_psd_id", psdAssetId)
         .eq("file_path", storagePath)
         .neq("id", assetId)
         .maybeSingle();
