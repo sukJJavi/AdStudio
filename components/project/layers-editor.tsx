@@ -258,9 +258,18 @@ export function LayersEditor({
         return;
       }
 
-      const formats = data.formats as AnalysisFormatStatus[];
-      if (formats.some(hasBlockingIncident)) {
-        setBlockedReport(formats);
+      const recalculated = data.formats as AnalysisFormatStatus[];
+
+      // Bloque 15: una incidencia crítica (NO_USABLE_LAYERS/PSD_PARSE_ERROR) en
+      // un formato solo afecta al PSD del que depende ese formato (ver
+      // lib/iab/incident-analyzer.ts#resolvePsdIdForFormat) — no debe impedir
+      // avanzar al master si el resto de PSDs/formatos están sanos. Solo se
+      // bloquea la navegación si NINGÚN formato es usable.
+      const blocked = recalculated.filter(hasBlockingIncident);
+      if (blocked.length > 0) {
+        setBlockedReport(recalculated);
+      }
+      if (blocked.length === recalculated.length) {
         return;
       }
 
@@ -481,7 +490,9 @@ export function LayersEditor({
         {blockedReport && (
           <div className="flex flex-col gap-3 pt-2">
             <p className="text-xs font-medium text-[#FF8A8A]">
-              Hay incidencias críticas tras recalcular el análisis — no se puede continuar al master.
+              {blockedReport.every(hasBlockingIncident)
+                ? "Hay incidencias críticas tras recalcular el análisis — no se puede continuar al master."
+                : "Alguno de los PSDs tiene incidencias críticas — esos formatos quedarán sin master, pero puedes continuar con el resto."}
             </p>
             {blockedReport
               .filter(hasBlockingIncident)

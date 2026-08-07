@@ -106,7 +106,6 @@ export function UploadZones({
   const router = useRouter();
 
   const psdAssets = initialAssets.filter((a) => a.layer_type === "psd");
-  const excelAssets = initialAssets.filter((a) => a.layer_type === "excel");
   const animationAssets = initialAssets.filter((a) => a.layer_type === "animation");
   const fontAssets = initialAssets.filter((a) => a.layer_type === "font");
 
@@ -126,7 +125,9 @@ export function UploadZones({
   const [removingIds, setRemovingIds] = useState<Set<string>>(new Set());
   const [deleteErrors, setDeleteErrors] = useState<Record<string, string>>({});
 
-  const puedeAnalizar = psdAssets.length > 0 && excelAssets.length > 0;
+  // El Excel del plan de medios es opcional (ver lib/analysis.ts) — solo hace
+  // falta al menos un PSD subido para poder lanzar el análisis.
+  const puedeAnalizar = psdAssets.length > 0;
 
   async function handleDelete(assetId: string) {
     setDeleteErrors((prev) => {
@@ -532,11 +533,7 @@ export function UploadZones({
           </Button>
         )}
         {!puedeAnalizar && (
-          <p className="text-sm text-muted-foreground">
-            {psdAssets.length === 0
-              ? "Sube al menos un PSD para poder analizar."
-              : "Falta el Excel del plan de medios — súbelo en el paso de Brief antes de analizar."}
-          </p>
+          <p className="text-sm text-muted-foreground">Sube al menos un PSD para poder analizar.</p>
         )}
         {analizarError && <span className="text-sm text-red-600">{analizarError}</span>}
       </div>

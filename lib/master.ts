@@ -107,6 +107,8 @@ export type MasterWithUrls = {
   isPrimary: boolean;
   jpgUrl: string | null;
   pngUrl: string | null;
+  /** Signed URL de `{project_id}/masters/{sourcePsdId}/master.zip` — descarga directa sin pasar por producción. */
+  zipUrl: string | null;
   createdAt: string;
   /** PSD (adstudio_assets.id) del que es master esta fila — Bloque 15: cada PSD es un master independiente. */
   sourcePsdId: string | null;
@@ -155,9 +157,16 @@ export async function getMasterStatus(projectId: string): Promise<MasterStatusRe
 
   const masters: MasterWithUrls[] = await Promise.all(
     ((masterRows ?? []) as MasterRecord[]).map(async (m) => {
-      const [jpgSigned, pngSigned] = await Promise.all([
+      const [jpgSigned, pngSigned, zipSigned] = await Promise.all([
         supabase.storage.from("adstudio-projects").createSignedUrl(m.jpg_path, SIGNED_URL_TTL_SECONDS),
         supabase.storage.from("adstudio-projects").createSignedUrl(m.png_path, SIGNED_URL_TTL_SECONDS),
+        m.source_psd_id
+          ? supabase.storage
+              .from("adstudio-projects")
+              .createSignedUrl(`${projectId}/masters/${m.source_psd_id}/master.zip`, SIGNED_URL_TTL_SECONDS, {
+                download: true,
+              })
+          : Promise.resolve({ data: null }),
       ]);
       return {
         id: m.id,
@@ -168,6 +177,7 @@ export async function getMasterStatus(projectId: string): Promise<MasterStatusRe
         isPrimary: m.is_primary,
         jpgUrl: jpgSigned.data?.signedUrl ?? null,
         pngUrl: pngSigned.data?.signedUrl ?? null,
+        zipUrl: zipSigned.data?.signedUrl ?? null,
         createdAt: m.created_at,
         sourcePsdId: m.source_psd_id,
       };

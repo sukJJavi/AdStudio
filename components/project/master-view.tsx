@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Html5ChangeChat } from "@/components/project/html5-change-chat";
@@ -96,6 +96,15 @@ function MasterCard({
         <Button variant="outline" size="sm" className="w-full" onClick={() => setChatOpen((v) => !v)}>
           {chatOpen ? "Ocultar chat de cambios" : "Ajustar este master"}
         </Button>
+        {master.zipUrl && (
+          <a
+            href={master.zipUrl}
+            download
+            className={buttonVariants({ variant: "outline", size: "sm", className: "w-full" })}
+          >
+            Descargar master (ZIP)
+          </a>
+        )}
         {chatOpen && (
           <Html5ChangeChat
             projectId={projectId}

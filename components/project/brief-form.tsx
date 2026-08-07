@@ -497,8 +497,9 @@ export function BriefForm({
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
           <p className="text-xs text-muted-foreground">
-            Al subirlo se detectan automáticamente los formatos del plan en la tabla de abajo — puedes
-            corregirlos antes de guardar.
+            Opcional — al subirlo se detectan automáticamente los formatos del plan en la tabla de abajo
+            (puedes corregirlos antes de guardar). Sin Excel, añade los formatos a mano con
+            &quot;+ Añadir formato manualmente&quot;.
           </p>
           <DropArea
             label="Arrastra el Excel del plan de medios"
@@ -797,6 +798,13 @@ export function BriefForm({
             </ul>
           </CardContent>
         </Card>
+      )}
+
+      {formats.length === 0 && !currentExcelAsset && (
+        <p className="text-sm text-[#F5C46B]">
+          Añade al menos un formato al plan de medios (subiendo el Excel o con &quot;+ Añadir formato
+          manualmente&quot;) antes de guardar.
+        </p>
       )}
 
       <div className="flex items-center gap-3">

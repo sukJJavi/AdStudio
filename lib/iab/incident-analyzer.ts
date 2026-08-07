@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { getIABFormatById } from "@/lib/iab/specs";
+import { ratioDistance } from "@/lib/render/format-level";
 import type { Incidencia, Project, ProjectAsset, ProjectFormat } from "@/lib/types";
 
 /**
@@ -229,6 +230,44 @@ function buildIncidenciasForFormat(
   return incidencias;
 }
 
+/** Dimensiones del PSD (Bloque 15) desde su propia metadata — ver trigger/analyze-psd.ts. */
+function psdDimsFromAsset(psdAsset: ProjectAsset): { ancho: number; alto: number } | null {
+  const meta = psdAsset.metadata as { psdWidth?: number | null; psdHeight?: number | null } | undefined;
+  return meta?.psdWidth && meta?.psdHeight ? { ancho: meta.psdWidth, alto: meta.psdHeight } : null;
+}
+
+/**
+ * PSD-base de un formato del plan, con el mismo criterio de prioridad que
+ * trigger/render-adaptations.ts#assignMasterToFormat: override manual
+ * (master_base_psd_id) > asociación histórica (source_psd_id) > más cercano
+ * por ratio de aspecto (distancia logarítmica). Con un único PSD en el
+ * proyecto, siempre es ese — comportamiento histórico sin cambios.
+ */
+function resolvePsdIdForFormat(format: ProjectFormat, psdAssets: ProjectAsset[]): string | null {
+  if (psdAssets.length === 0) return null;
+  if (psdAssets.length === 1) return psdAssets[0].id;
+
+  const override = format.master_base_psd_id ?? format.source_psd_id ?? null;
+  if (override && psdAssets.some((p) => p.id === override)) return override;
+
+  const spec = getIABFormatById(format.iab_format);
+  if (!spec) return psdAssets[0].id;
+  const formatRatio = spec.ancho / spec.alto;
+
+  let closest: ProjectAsset | null = null;
+  let minDist = Infinity;
+  for (const psd of psdAssets) {
+    const dims = psdDimsFromAsset(psd);
+    if (!dims) continue;
+    const dist = ratioDistance(dims.ancho / dims.alto, formatRatio);
+    if (dist < minDist) {
+      minDist = dist;
+      closest = psd;
+    }
+  }
+  return closest?.id ?? psdAssets[0].id;
+}
+
 /**
  * Cruza adstudio_assets + adstudio_formats del proyecto, genera las incidencias
  * de cada formato y las persiste en adstudio_formats.incidencias.
@@ -236,6 +275,12 @@ function buildIncidenciasForFormat(
  * Supabase se recibe por parámetro (creado con `createTriggerSupabaseClient`)
  * en vez de crearse aquí, porque `lib/supabase/server.ts` falla por WebSocket
  * en el runtime de Trigger.dev.
+ *
+ * Bloque 15 — multi-PSD: cada formato se evalúa SOLO contra las capas de su
+ * PSD-base (resolvePsdIdForFormat), nunca contra el pool combinado de todos
+ * los PSDs del proyecto. Antes, un PSD con error de parseo o sin capas
+ * utilizables bloqueaba (NO_USABLE_LAYERS/PSD_PARSE_ERROR) TODOS los formatos
+ * del proyecto, incluidos los de otros PSDs sanos.
  */
 export async function analyzeProjectIncidents(
   projectId: string,
@@ -249,16 +294,22 @@ export async function analyzeProjectIncidents(
   if (assetsError || formatsError || !formats) return;
 
   const allAssets = (assets ?? []) as ProjectAsset[];
+  const psdAssets = allAssets.filter((a) => a.layer_type === "psd");
   const psdLayers = allAssets.filter((a) => a.layer_type != null && PSD_LAYER_TYPES.has(a.layer_type));
   const hasAnimationGuide = allAssets.some((a) => a.layer_type === "animation");
-  const hasNoUsableLayers = psdLayers.filter((a) => !a.discarded).length === 0;
-  const hasParseError = allAssets.some((a) => a.layer_type === "psd" && a.status === "error");
 
   await Promise.all(
     (formats as ProjectFormat[]).map((format) => {
+      const psdId = resolvePsdIdForFormat(format, psdAssets);
+      const scopedPsdLayers = psdId ? psdLayers.filter((a) => a.source_psd_id === psdId) : psdLayers;
+      const hasNoUsableLayers = scopedPsdLayers.filter((a) => !a.discarded).length === 0;
+      const hasParseError = psdId
+        ? psdAssets.some((p) => p.id === psdId && p.status === "error")
+        : psdAssets.some((p) => p.status === "error");
+
       const incidencias = buildIncidenciasForFormat(
         format,
-        psdLayers,
+        scopedPsdLayers,
         hasAnimationGuide,
         hasNoUsableLayers,
         hasParseError,

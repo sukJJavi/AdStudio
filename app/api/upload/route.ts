@@ -97,10 +97,9 @@ async function registerAssetAndMaybeTriggerAnalysis(
   }
 
   const hasPsd = (assets ?? []).some((a) => a.layer_type === "psd");
-  const hasExcel = (assets ?? []).some((a) => a.layer_type === "excel");
 
   // Misma query que el rate limiting de triggerAnalysis (lib/analysis.ts): si dos
-  // uploads (PSD y Excel) llegan por separado y el análisis ya está en curso,
+  // uploads (p. ej. dos PSDs) llegan por separado y el análisis ya está en curso,
   // evita lanzar un segundo job.
   const { data: projectStatusRow } = await supabase
     .from("adstudio_projects")
@@ -113,7 +112,10 @@ async function registerAssetAndMaybeTriggerAnalysis(
   let analysisTriggered = false;
   let analysisError: string | null = null;
 
-  if (hasPsd && hasExcel && !alreadyAnalyzing) {
+  // El Excel del plan de medios es opcional (ver lib/analysis.ts) — basta con
+  // que haya al menos un PSD para lanzar el análisis, tanto si sube un
+  // primer PSD como si sube uno adicional a un proyecto ya analizado.
+  if (hasPsd && !alreadyAnalyzing) {
     try {
       const result = await triggerAnalysis(projectId);
       analysisTriggered = result.ok;

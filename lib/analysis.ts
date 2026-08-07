@@ -22,23 +22,21 @@ export async function triggerAnalysis(projectId: string): Promise<TriggerAnalysi
     return { ok: false, status: 429, error: "Job already running" };
   }
 
+  // El Excel del plan de medios es opcional (solo aporta el import automático
+  // de formatos, ver lib/media-plan.ts) — el análisis del PSD no debe
+  // esperarlo ni requerirlo, basta con que el usuario tenga al menos un
+  // formato en la tabla del brief (añadido a mano o vía Excel).
   const { count: psdCount } = await supabase
     .from("adstudio_assets")
     .select("id", { count: "exact", head: true })
     .eq("project_id", projectId)
     .eq("layer_type", "psd");
 
-  const { count: excelCount } = await supabase
-    .from("adstudio_assets")
-    .select("id", { count: "exact", head: true })
-    .eq("project_id", projectId)
-    .eq("layer_type", "excel");
-
-  if (!psdCount || !excelCount) {
+  if (!psdCount) {
     return {
       ok: false,
       status: 400,
-      error: "Se necesita al menos un PSD y un Excel subidos para analizar.",
+      error: "Se necesita al menos un PSD subido para analizar.",
     };
   }
 
