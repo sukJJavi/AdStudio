@@ -151,10 +151,7 @@ export function UploadZones({
   }
 
   async function handlePsdFiles(files: File[]) {
-    const slotsLeft = 2 - (psdAssets.length + pendingPsd.length);
-    const toUpload = files.slice(0, Math.max(slotsLeft, 0));
-
-    for (const file of toUpload) {
+    for (const file of files) {
       if (!file.name.toLowerCase().endsWith(".psd")) {
         setPendingPsd((prev) => [
           ...prev,
@@ -358,10 +355,9 @@ export function UploadZones({
             ¿Cómo preparar tu PSD?
           </a>
           <DropArea
-            label="Arrastra 1 o 2 archivos .psd"
+            label="Arrastra tus archivos .psd"
             hint="Máximo 100MB cada uno"
             onFiles={handlePsdFiles}
-            disabled={psdAssets.length + pendingPsd.length >= 2}
           />
           <ul className="flex flex-col gap-2">
             {psdAssets.map((asset) => (
